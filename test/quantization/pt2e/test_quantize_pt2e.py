@@ -50,6 +50,7 @@ from torch.testing._internal.common_quantization import (
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
+    raise_on_run_directly,
     skipIfHpu,
     TemporaryFileName,
     TEST_CUDA,
@@ -2346,3 +2347,6 @@ devices = ["cpu", "cuda"]
 if TEST_HPU:
     devices.append("hpu")
 instantiate_device_type_tests(TestQuantizePT2E, globals(), only_for=devices)
+
+if __name__ == "__main__":
+    raise_on_run_directly("test/test_quantization.py")
