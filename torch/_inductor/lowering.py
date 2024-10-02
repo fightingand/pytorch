@@ -6284,6 +6284,24 @@ def _sink_tokens(tokens):
 
 @register_lowering(torch.ops.higher_order.with_effects, type_promotion_kind=None)
 def with_effects(token, op, *args, **kwargs):
+    # with_effects wrap result of the op in tuple.
+    # As a result ir produces redundant no-op buffer assignments.
+    # They are not affecting performance, but confusing for the tests,
+    # that verify, that wait_tensor was called on exactly the result buffer of functional collectives.
+    # E.g.:
+    # buf14 = torch.ops._c10d_functional.wait_tensor.default(buf13)
+    # del buf12
+    # del buf13
+    # buf15 = buf14
+    # return buf15
+    #
+    # TODO(ivankobzarev): After optimization of those redundant assignments this shortcircuit can be remvoved
+    # https://github.com/pytorch/pytorch/issues/136012
+
+    if op == torch.ops._c10d_functional.wait_tensor.default:
+        assert len(args) == 1
+        return token, _wait_tensor(args[0])
+
     result = ir.EffectfulKernel.create(op, *args, **kwargs)
 
     from torch._higher_order_ops.effects import get_effect_key
