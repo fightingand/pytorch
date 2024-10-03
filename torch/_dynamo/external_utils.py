@@ -142,3 +142,14 @@ def call_module_hooks_from_backward_state(
         if new_result is not None:
             result = new_result
     return result
+
+
+def fill_uninitialized(inputs: List[torch.Tensor]):
+    res = []
+    for inp in inputs:
+        if inp is None:
+            res.append(torch.empty(0))
+        else:
+            res.append(inp)
+
+    return res
