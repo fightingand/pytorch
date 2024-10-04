@@ -1497,7 +1497,11 @@ def cat(inputs, dim=0):
     MAX_SIMPLE_OP_COUNT = 2
 
     def additional_pointwise_ops(op: torch._ops.OpOverload):
-        return op in (aten.cat.default, aten.constant_pad_nd.default)
+        return op in (
+            aten.cat.default,
+            aten.constant_pad_nd.default,
+            aten._unsafe_masked_index.default,
+        )
 
     if len(inputs) <= MAX_COMPLEX_POINTWISE_CAT or (
         (len(inputs) <= config.max_pointwise_cat_inputs)
@@ -3625,6 +3629,7 @@ def rev(x, dims):
     )
 
 
+# TODO: remove this when gcc 10 support is dropped in inductor
 @register_lowering(aten.constant_pad_nd, type_promotion_kind=None)
 def constant_pad_nd(x, padding, fill_value=0):
     assert (len(padding) % 2) == 0
