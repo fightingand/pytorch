@@ -1255,14 +1255,17 @@ auto Engine::execute(
 
   if (compiled_autograd != nullptr) {
     // see [Note: Compiled Autograd]
-    TORCH_CHECK(
-        !create_graph, "compiled_autograd does not support create_graph");
     _thread_check.release();
-    TORCH_CHECK(
-        !AnomalyMode::is_enabled(),
-        "compiled_autograd does not support AnomalyMode")
-    return (*compiled_autograd)(
-        graph_root, *graph_task, accumulate_grad, outputs);
+    auto start = std::chrono::high_resolution_clock::now();
+    try {
+      return (*compiled_autograd)(
+          graph_root, *graph_task, accumulate_grad, create_graph, outputs);
+    } catch (const dynamo::autograd::EagerFallbackException& e) {
+      // continue with eager autograd engine
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::micro> duration = end - start;
+    std::cout << "Compiled autograd time taken: " << duration.count() << " us" << std::endl;
   }
 
   // Queue the root
