@@ -9,9 +9,14 @@ from torch._C import (
     _pop_torch_function_stack,
     _push_on_torch_function_stack,
 )
+from torch._dynamo.utils import counters
+from torch._inductor.utils import run_and_get_code
 from torch.overrides import _get_current_function_mode_stack, BaseTorchFunctionMode
 from torch.utils._device import DeviceContext
-from torch.utils._python_dispatch import TorchDispatchMode
+from torch.utils._python_dispatch import (
+    is_eager_only_torch_dispatch_mode_enabled,
+    TorchDispatchMode,
+)
 
 
 class TestMode(BaseTorchFunctionMode):
@@ -53,6 +58,64 @@ class TorchDispatchModeTests(torch._dynamo.test_case.TestCase):
 
         self.assertEqual(eager_res, compiled_res)
         self.assertEqual(cnt.frame_count, 0)
+
+    def test_eager_only_torch_dispatch_modes(self):
+        class CustomMode(TorchDispatchMode):
+            def __init__(self):
+                self.funcs = []
+
+            def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+                if is_eager_only_torch_dispatch_mode_enabled():
+                    self.funcs.append(func.__name__)
+                return func(*args, **kwargs)
+
+            @classmethod
+            def is_eager_only_mode(cls):
+                return True
+
+        class TestModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.relu = torch.nn.ReLU()
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                z = x * x
+                z = self.relu_graph_break(z)
+                z = z + z
+                z = self.mul_graph_break(z)
+                z = torch.matmul(z, z)
+                return z
+
+            @torch.compiler.disable
+            def relu_graph_break(self, x):
+                return self.relu(x)
+
+            @torch.compiler.disable
+            def mul_graph_break(self, x):
+                return x * x
+
+        model = TestModel()
+        inp = torch.rand(4, 4)
+        custom_mode = CustomMode()
+        with custom_mode:
+            out_ref = model(inp)
+        self.assertEqual(len(custom_mode.funcs), 5)
+
+        custom_mode.funcs.clear()
+        counters.clear()
+        self.assertEqual(len(custom_mode.funcs), 0)
+        self.assertEqual(len(counters["graph_break"]), 0)
+        with custom_mode:
+            out_compiled, triton_codes = run_and_get_code(
+                lambda: torch.compile(model)(inp)
+            )
+        self.assertEqual(out_ref, out_compiled)
+        self.assertEqual(len(custom_mode.funcs), 2)
+        self.assertEqual(len(counters["graph_break"]), 2)
+        graph_break_keys = list(counters["graph_break"].keys())
+        self.assertIn("relu_graph_break", graph_break_keys[0])
+        self.assertIn("mul_graph_break", graph_break_keys[1])
+        self.assertEqual(len(triton_codes), 3)
 
 
 class TorchFunctionModeTests(torch._dynamo.test_case.TestCase):

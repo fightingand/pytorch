@@ -17,6 +17,8 @@ from torch._C import (
     _push_on_torch_dispatch_stack,
     DispatchKey,
 )
+import threading
+
 
 
 # TODO: Limitations and things about enable_torch_dispatch_mode we should fix before exposing it:
@@ -27,9 +29,18 @@ from torch._C import (
 
 _is_in_torch_dispatch_mode = False
 _is_in_non_infra_torch_dispatch_mode = False
+_is_in_non_eager_only_torch_dispatch_mode = False
 
-def is_in_torch_dispatch_mode(include_infra_modes=True) -> bool:
-    return _is_in_torch_dispatch_mode if include_infra_modes else _is_in_non_infra_torch_dispatch_mode
+def is_in_torch_dispatch_mode(include_infra_modes=True, include_eager_only_modes=True) -> bool:
+    if include_infra_modes and include_eager_only_modes:
+        return _is_in_torch_dispatch_mode
+    elif not include_infra_modes and not include_eager_only_modes:
+        return _is_in_non_infra_torch_dispatch_mode and _is_in_non_eager_only_torch_dispatch_mode
+    elif not include_infra_modes:
+        return _is_in_non_infra_torch_dispatch_mode
+    elif not include_eager_only_modes:
+        return _is_in_non_eager_only_torch_dispatch_mode
+    raise AssertionError("This should never be reached")
 
 
 class TorchDispatchMode:
@@ -70,6 +81,7 @@ class TorchDispatchMode:
 
         self.old_dispatch_mode_flags: Deque[bool] = deque()
         self.old_non_infra_dispatch_mode_flags: Deque[bool] = deque()
+        self.old_non_eager_only_dispatch_mode_flags: Deque[bool] = deque()
 
     def _lazy_init_old_dispatch_mode_flags(self):
         if not hasattr(self, "old_dispatch_mode_flags"):
@@ -78,6 +90,9 @@ class TorchDispatchMode:
         if not hasattr(self, "old_non_infra_dispatch_mode_flags"):
             self.old_non_infra_dispatch_mode_flags: Deque[bool] = deque()  # type: ignore[no-redef]
 
+        if not hasattr(self, "old_non_eager_only_dispatch_mode_flags"):
+            self.old_non_eager_only_dispatch_mode_flags: Deque[bool] = deque()  # type: ignore[no-redef]
+
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         raise NotImplementedError
@@ -85,6 +100,7 @@ class TorchDispatchMode:
     def __enter__(self):
         global _is_in_torch_dispatch_mode
         global _is_in_non_infra_torch_dispatch_mode
+        global _is_in_non_eager_only_torch_dispatch_mode
         # Previously, there wasn't any state in this class' constructor
         # super calls were added to existing modes, but for any new modes
         # this will replicate the previous behavior of not strictly needing
@@ -94,6 +110,8 @@ class TorchDispatchMode:
         _is_in_torch_dispatch_mode = True
         self.old_non_infra_dispatch_mode_flags.append(_is_in_non_infra_torch_dispatch_mode)
         _is_in_non_infra_torch_dispatch_mode = _is_in_non_infra_torch_dispatch_mode or not self.is_infra_mode()
+        self.old_non_eager_only_dispatch_mode_flags.append(_is_in_non_eager_only_torch_dispatch_mode)
+        _is_in_non_eager_only_torch_dispatch_mode = _is_in_non_eager_only_torch_dispatch_mode or not self.is_eager_only_mode()
         _push_mode(self)
         return self
 
@@ -107,6 +125,8 @@ class TorchDispatchMode:
         _is_in_torch_dispatch_mode = self.old_dispatch_mode_flags.pop()
         global _is_in_non_infra_torch_dispatch_mode
         _is_in_non_infra_torch_dispatch_mode = self.old_non_infra_dispatch_mode_flags.pop()
+        global _is_in_non_eager_only_torch_dispatch_mode
+        _is_in_non_eager_only_torch_dispatch_mode = self.old_non_eager_only_dispatch_mode_flags.pop()
         _pop_mode(mb_dk_or_mode_key)
 
     @classmethod
@@ -121,6 +141,26 @@ class TorchDispatchMode:
     def is_infra_mode(cls):
         return False
 
+    @classmethod
+    def is_eager_only_mode(cls):
+        return False
+
+
+_eager_only_torch_dispatch_mode_enabled = threading.local()
+
+def is_eager_only_torch_dispatch_mode_enabled():
+    return getattr(_eager_only_torch_dispatch_mode_enabled, "value", True)
+
+
+@contextlib.contextmanager
+def disable_eager_only_torch_dispatch_mode():
+    global _eager_only_torch_dispatch_mode_enabled
+    try:
+        prior = is_eager_only_torch_dispatch_mode_enabled()
+        _eager_only_torch_dispatch_mode_enabled.value = False
+        yield
+    finally:
+        _eager_only_torch_dispatch_mode_enabled.value = prior
 
 
 def _get_current_dispatch_mode():
