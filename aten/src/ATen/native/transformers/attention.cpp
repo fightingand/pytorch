@@ -18,6 +18,7 @@
 #include <c10/util/Logging.h>
 #include <c10/core/DispatchKey.h>
 #include <c10/core/DispatchKeySet.h>
+#include <ATen/autocast_mode.h>
 
 #include <limits>
 #include <utility>
@@ -84,6 +85,34 @@ DEFINE_DISPATCH(flash_attention_kernel);
 DEFINE_DISPATCH(flash_attention_backward_kernel);
 
 namespace {
+class AutocastGuard {
+public:
+    // Constructor: saves current state and optionally modifies it
+    AutocastGuard(at::DeviceType device_type, bool new_state)
+        : device_type_(device_type)
+        , original_state_(at::autocast::is_autocast_enabled(device_type)) {
+        // Only modify state if requested state is different from current
+        if (original_state_ != new_state) {
+            at::autocast::set_autocast_enabled(device_type_, new_state);
+        }
+    }
+
+    // Destructor: restores original state
+    ~AutocastGuard() {
+        // Only restore if current state differs from original
+        if (at::autocast::is_autocast_enabled(device_type_) != original_state_) {
+            at::autocast::set_autocast_enabled(device_type_, original_state_);
+        }
+    }
+
+    // Delete copy operations to prevent accidental copies
+    AutocastGuard(const AutocastGuard&) = delete;
+    AutocastGuard& operator=(const AutocastGuard&) = delete;
+
+private:
+    const at::DeviceType device_type_;
+    const bool original_state_;
+};
 
 Tensor gemm_nt(const Tensor& self, const Tensor& other) {
   if (self.is_nested()) {
@@ -809,6 +838,10 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
   // Keep query, key, value in high precision for accuracy
   // NestedTensor reports issues for backward with autograd so disabled: must be
   // contiguous to get buffer.
+  const auto device_type = query_.device().type();
+  // If FP16/BF16 reduction is disabled, temporarily disable autocast
+  bool should_disable = !ctx.allowFP16BF16ReductionMathSDP();
+  AutocastGuard guard(device_type, should_disable);
   auto query_acc = !ctx.allowFP16BF16ReductionMathSDP() &&
           (query_.scalar_type() == at::kHalf ||
            query_.scalar_type() == at::kBFloat16) &&
@@ -881,8 +914,7 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
         attn = at::dropout(attn, dropout_p, true);
       }
     }
-
-    return std::make_tuple(at::matmul(attn, value_expanded).to(origin_dtype), attn.to(origin_dtype));
+  return std::make_tuple(at::matmul(attn, value_expanded).to(origin_dtype), attn.to(origin_dtype));
 }
 
 std::tuple<at::Tensor, at::Tensor>
