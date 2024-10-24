@@ -45,7 +45,6 @@ from .higher_order_ops import (
     TorchHigherOrderOperatorVariable,
 )
 from .iter import (
-    CountIteratorVariable,
     CycleIteratorVariable,
     IteratorVariable,
     ItertoolsVariable,
@@ -126,7 +125,6 @@ __all__ = [
     "ConstantVariable",
     "ConstDictVariable",
     "ContextWrappingVariable",
-    "CountIteratorVariable",
     "CreateTMADescriptorVariable",
     "CUDADeviceVariable",
     "CustomizedDictVariable",
