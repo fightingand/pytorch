@@ -348,7 +348,7 @@ class IRNode:
         finally:
             IRNode._current_origins = old
 
-    def _post_init_setattr(self, attr, value):
+    def _post_init_setattr(self, attr: str, value: Any) -> None:
         # Intended for use in __post_init__ for enforcing an invariant on a dataclass
         # If you must, can also be used for setting provenance info
         # We would like to try and minimize these usages though
@@ -1109,10 +1109,10 @@ class Reduction(Loops):
 
         if reduction_type in ("argmin", "argmax"):
             flatten_index = FixedLayout(
-                None,  # type: ignore[arg-type]
-                None,  # type: ignore[arg-type]
-                reduction_ranges,
-                FlexibleLayout.contiguous_strides(reduction_ranges),
+                device=None,  # type: ignore[arg-type]
+                dtype=None,  # type: ignore[arg-type]
+                size=reduction_ranges,
+                stride=FlexibleLayout.contiguous_strides(reduction_ranges),
             ).make_indexer()
 
             def value_fn(index, rindex):
@@ -1525,38 +1525,9 @@ class Reduction(Loops):
         )
 
 
+@ir_dataclass
 class WelfordReduction(Reduction):
     output_index: int
-
-    def __init__(
-        self,
-        device,
-        dtype,
-        inner_fns,
-        ranges,
-        reduction_ranges,
-        reduction_type,
-        reduction_hint,
-        output_index,
-    ):
-        if len(inner_fns) == 1:
-            loader = inner_fns[0]
-        else:
-
-            def loader(idx, reduction_idx):
-                return tuple(fn(idx, reduction_idx) for fn in inner_fns)
-
-        super().__init__(
-            device=device,
-            dtype=dtype,
-            inner_fn=loader,
-            ranges=ranges,
-            reduction_ranges=reduction_ranges,
-            reduction_type=reduction_type,
-            src_dtype=dtype,
-            reduction_hint=reduction_hint,
-        )
-        self.output_index = output_index
 
     def store_reduction(self, output_name, indexer, vars, reduction_vars):
         values = ops.reduction(
@@ -1667,17 +1638,25 @@ class WelfordReduction(Reduction):
                 reduction_hint,
             )
 
+        if len(inner_fns) == 1:
+            loader = inner_fns[0]
+        else:
+
+            def loader(idx, reduction_idx):
+                return tuple(fn(idx, reduction_idx) for fn in inner_fns)
+
         results = [
             TensorBox.create(
                 WelfordReduction(
-                    device,
-                    dtype,
-                    inner_fns,
-                    ranges,
-                    reduction_ranges,
-                    reduction_type,
-                    reduction_hint,
-                    output_idx,
+                    device=device,
+                    dtype=dtype,
+                    inner_fn=loader,
+                    ranges=ranges,
+                    reduction_ranges=reduction_ranges,
+                    reduction_type=reduction_type,
+                    src_dtype=dtype,
+                    reduction_hint=reduction_hint,
+                    output_index=output_idx,
                 )
             )
             for output_idx in range(3)
@@ -2127,7 +2106,7 @@ def is_contiguous_storage_and_layout(x: IRNode) -> bool:
         # pad the stride here so we will NOT claim an tensor as contiguous
         # if a padding is gonna happen.
         if layout.should_pad_strides():
-            layout.pad_strides()
+            layout = layout.pad_strides()
         return layout.is_contiguous()
     except NotImplementedError:
         return False
@@ -2343,11 +2322,11 @@ class ExpandView(BaseView):
                     else sympy.Integer(0)
                 )
             new_layout = FixedLayout(
-                old_layout.device,
-                old_layout.dtype,
-                list(new_size),
-                new_stride,
-                old_layout.offset,
+                device=old_layout.device,
+                dtype=old_layout.dtype,
+                size=list(new_size),
+                stride=new_stride,
+                offset=old_layout.offset,
             )
             return ReinterpretView(data=storage, layout=new_layout)
 
@@ -2442,11 +2421,11 @@ class SqueezeView(BaseView):
                         assert size == 1, "expected squeezed size to be 1"
 
             new_layout = FixedLayout(
-                old_layout.device,
-                old_layout.dtype,
-                new_size,
-                new_stride,
-                old_layout.offset,
+                device=old_layout.device,
+                dtype=old_layout.dtype,
+                size=new_size,
+                stride=new_stride,
+                offset=old_layout.offset,
             )
             return ReinterpretView(data=storage, layout=new_layout)
 
@@ -2548,11 +2527,11 @@ class View(GenericView):
 
             storage, old_layout = as_contiguous_storage_and_layout(x)
             new_layout = FixedLayout(
-                old_layout.device,
-                old_layout.dtype,
-                new_size,
-                FlexibleLayout.contiguous_strides(new_size),
-                old_layout.offset,
+                device=old_layout.device,
+                dtype=old_layout.dtype,
+                size=new_size,
+                stride=FlexibleLayout.contiguous_strides(new_size),
+                offset=old_layout.offset,
             )
             return ReinterpretView(data=storage, layout=new_layout)
 
@@ -2663,7 +2642,8 @@ class ReinterpretView(BaseView):
     def __post_init__(self):
         super().__post_init__()
         if isinstance(self.data, BaseView):
-            object.__setattr__(self, "data", self.data.unwrap_view())
+            # Enforces that self.data is always a non-view
+            self._post_init_setattr("data", self.data.unwrap_view())
 
     def __str__(self) -> str:
         return self.str_helper(
@@ -2749,11 +2729,11 @@ class DtypeView(BaseView):
         if is_storage_and_layout(x):
             storage, old_layout = as_storage_and_layout(x)
             new_layout = FixedLayout(
-                old_layout.device,
-                new_dtype,
-                old_layout.size,
-                old_layout.stride,
-                old_layout.offset,
+                device=old_layout.device,
+                dtype=new_dtype,
+                size=old_layout.size,
+                stride=old_layout.stride,
+                offset=old_layout.offset,
             )
             return ReinterpretView(data=storage, layout=new_layout)
         return DtypeView(data=x, target_dtype=new_dtype)
@@ -2779,6 +2759,7 @@ class DtypeView(BaseView):
         return loader
 
 
+@ir_dataclass
 class SliceView(View):
     @classmethod
     def normalize_start_end(cls, x, dim, start, end):
@@ -2836,11 +2817,11 @@ class SliceView(View):
             new_stride = list(old_layout.stride)
             new_stride[dim] = new_stride[dim] * step
             new_layout = FixedLayout(
-                old_layout.device,
-                old_layout.dtype,
-                new_size,
-                new_stride,
-                old_layout.offset + old_layout.stride[dim] * start,
+                device=old_layout.device,
+                dtype=old_layout.dtype,
+                size=new_size,
+                stride=new_stride,
+                offset=old_layout.offset + old_layout.stride[dim] * start,
             )
             return ReinterpretView(data=storage, layout=new_layout)
 
@@ -2933,27 +2914,18 @@ def get_align_for_dtype(dtype: torch.dtype) -> int:
 
 @ir_dataclass
 class Layout(IRNode):
-    def __init__(
-        self,
-        device: torch.device,
-        dtype: torch.dtype,
-        size: List[Expr],
-        stride: Optional[Sequence[Union[Expr, int]]],
-        offset: Expr = Integer(0),
-    ):
-        assert stride is None or len(size) == len(
-            stride
-        ), f"size={size}, stride={stride}"
-        self.device = device
-        self.dtype = dtype
-        assert all(isinstance(s, (Expr, int)) for s in size)
-        self.size = size
-        self._stride = stride
-        self.offset = offset
+    device: torch.device
+    dtype: torch.dtype
+    size: List[Expr]
+    stride: List[Expr] = dataclasses.field(default_factory=list)
+    offset: Expr = Integer(0)
 
-    @property
-    def stride(self):
-        return self._stride
+    def __post_init__(self):
+        # If stride is empty (default), we compute it from size
+        if not self.stride:
+            self._post_init_setattr(
+                "stride", FlexibleLayout.contiguous_strides(self.size)
+            )
 
     def __str__(self) -> str:
         offset = ""
@@ -3086,10 +3058,10 @@ class Layout(IRNode):
         metrics.num_comprehensive_padding += 1
         return new_strides
 
-    def pad_strides(self):
+    def pad_strides(self) -> Layout:
         assert isinstance(self, FlexibleLayout)
-        assert self._stride is not None
-        self._stride = self._pad_strides(self._stride, self.size, self.dtype)
+        new_stride = self._pad_strides(self.stride, self.size, self.dtype)
+        return dataclasses.replace(self, stride=new_stride)
 
     def should_pad_strides(self):
         return config.comprehensive_padding and isinstance(self, FlexibleLayout)
@@ -3097,15 +3069,16 @@ class Layout(IRNode):
     def as_fixed(self):
         if isinstance(self, FixedLayout):
             return self
-
         if self.should_pad_strides():
-            self.pad_strides()
+            layout = self.pad_strides()
+        else:
+            layout = self
         return FixedLayout(
-            self.device,
-            self.dtype,
-            self.size,
-            self.stride,
-            self.offset,
+            device=layout.device,
+            dtype=layout.dtype,
+            size=layout.size,
+            stride=layout.stride,
+            offset=layout.offset,
         )
 
     def make_indexer(self):
@@ -3127,29 +3100,28 @@ class Layout(IRNode):
         return compute_required_storage_length(self.size, self.stride, self.offset)  # type: ignore[arg-type, return-value]
 
 
+@ir_dataclass
 class FixedLayout(Layout):
     """A Tensor layout we cannot change"""
 
-    def __init__(
-        self,
-        device: torch.device,
-        dtype: torch.dtype,
-        size: Union[List[Expr], List[int]],
-        stride: Optional[Sequence[Union[Expr, int]]] = None,
-        offset: Union[Expr, int] = Integer(0),
-    ):
-        if stride is None:
-            stride = FlexibleLayout.contiguous_strides(size)
-        super().__init__(
-            device=device,
-            dtype=dtype,
-            size=size,  # type: ignore[arg-type]
-            stride=stride,
-            offset=offset,  # type: ignore[arg-type]
-        )
+    # # We keep this an (almost) exact match of the dataclass's init so it works
+    # # with things like replace
+    # def __init__(
+    #     self,
+    #     device: torch.device,
+    #     dtype: torch.dtype,
+    #     size: List[Expr],
+    #     stride: Optional[List[Expr]] = None,
+    #     offset: Expr = Integer(0),
+    # ):
+    #     if stride is None:
+    #         stride = FlexibleLayout.contiguous_strides(self.size)
+    #     super().__init__(device=device, dtype=dtype, size=size, stride=stride, offset=offset)
 
     def make_indexer(self):
         """A closure containing math to read a given element"""
+
+        assert self.stride is not None
 
         def indexer(index):
             assert len(index) == len(self.stride)
@@ -3163,6 +3135,7 @@ class FixedLayout(Layout):
         return indexer
 
 
+@ir_dataclass
 class FlexibleLayout(Layout):
     """A Tensor layout we are allowed to change"""
 
@@ -3251,11 +3224,11 @@ class FlexibleLayout(Layout):
             new_stride = self._pad_strides(new_stride, self.size, self.dtype)
 
         return FixedLayout(
-            self.device,
-            self.dtype,
-            self.size,
-            new_stride,
-            self.offset,
+            device=self.device,
+            dtype=self.dtype,
+            size=self.size,
+            stride=new_stride,
+            offset=self.offset,
         )
 
     def as_exact_strides(self, exact_strides, allow_padding=False):
@@ -3264,11 +3237,11 @@ class FlexibleLayout(Layout):
             new_stride = self._pad_strides(new_stride, self.size, self.dtype)
 
         return FixedLayout(
-            self.device,
-            self.dtype,
-            self.size,
-            new_stride,
-            self.offset,
+            device=self.device,
+            dtype=self.dtype,
+            size=self.size,
+            stride=new_stride,
+            offset=self.offset,
         )
 
     def as_fill_order(self, order):
@@ -3276,11 +3249,11 @@ class FlexibleLayout(Layout):
         if self.should_pad_strides():
             new_stride = self._pad_strides(new_stride, self.size, self.dtype)
         return FixedLayout(
-            self.device,
-            self.dtype,
-            self.size,
-            new_stride,
-            self.offset,
+            device=self.device,
+            dtype=self.dtype,
+            size=self.size,
+            stride=new_stride,
+            offset=self.offset,
         )
 
     def as_same_order(self, stride):
@@ -3288,21 +3261,23 @@ class FlexibleLayout(Layout):
         if self.should_pad_strides():
             new_stride = self._pad_strides(new_stride, self.size, self.dtype)
         return FixedLayout(
-            self.device,
-            self.dtype,
-            self.size,
-            new_stride,
-            self.offset,
+            device=self.device,
+            dtype=self.dtype,
+            size=self.size,
+            stride=new_stride,
+            offset=self.offset,
         )
 
-    def __init__(self, device, dtype, size, stride_order=None):
+    @classmethod
+    def create(cls, device, dtype, size, stride_order=None):
         if stride_order:
-            strides = FlexibleLayout.fill_ordered(size, stride_order)
+            stride = FlexibleLayout.fill_ordered(size, stride_order)
         else:
-            strides = FlexibleLayout.contiguous_strides(size)
-        super().__init__(device, dtype, size, strides)
+            stride = FlexibleLayout.contiguous_strides(size)
+        return cls(device=device, dtype=dtype, size=size, stride=stride)
 
 
+@ir_dataclass
 class NonOwningLayout(Layout):
     """Is a view into the storage of another tensor"""
 
@@ -3339,8 +3314,9 @@ class NoneLayout(IRNode):
     # dependencies manually in scheduler
 
     device: torch.device
-    size: List[int] = dataclasses.field(default_factory=lambda: [0])
-    stride: List[int] = dataclasses.field(default_factory=lambda: [0])
+    size: ClassVar[List[int]] = [0]  # dataclasses.field(default_factory=lambda: [0])
+    stride: ClassVar[List[int]] = [0]  # dataclasses.field(default_factory=lambda: [0])
+    # stride: List[int] = dataclasses.field(default_factory=lambda: [0])
 
     def storage_size(self):
         return 0
@@ -3355,15 +3331,15 @@ class MutationLayoutSHOULDREMOVE(Layout):
             target.get_device(),
             target.get_dtype(),
             target.get_size(),
-            None,
+            [],
         )
         self.target = target
         name = self.get_buffer().get_name()
         V.graph.mark_buffer_mutated(name)
 
-    @Layout.stride.getter  # type: ignore[attr-defined]
-    def stride(self):
-        return self.real_layout().stride
+    # @Layout.stride.getter  # type: ignore[attr-defined]
+    # def stride(self):
+    #     return self.real_layout().stride
 
     def storage_size(self) -> sympy.Expr:
         return self.real_layout().storage_size()
@@ -4176,7 +4152,7 @@ class CppTemplateBuffer(TemplateBuffer):
 
 @ir_dataclass(frozen=False)
 class InputsKernel(OperationBuffer):
-    inputs: List[Buffer]
+    inputs: List[TensorBox]
 
     def get_read_writes(self):
         reads: OrderedSet[dependencies.Dep] = OrderedSet()
@@ -4237,11 +4213,13 @@ class InputsKernel(OperationBuffer):
         return 1
 
 
+@ir_dataclass(frozen=False)
 class NopKernel(InputsKernel):
     def is_no_op(self):
         return True
 
 
+@ir_dataclass(frozen=False)
 class ConcatKernel(NopKernel):
     """
     There isn't actually a real kernel for concat, we just change the
@@ -4429,34 +4407,7 @@ class ExternKernel(InputsKernel):
     )
     mutation_outputs: List[MutationOutput] = dataclasses.field(default_factory=list)
 
-    def __init__(
-        self,
-        name,
-        layout,
-        inputs,
-        constant_args=(),
-        kwargs=None,
-        output_view=None,
-        python_kernel_name=None,
-        cpp_kernel_name=None,
-        ordered_kwargs_for_cpp_kernel=(),
-        op_overload=None,
-    ):
-        super().__init__(
-            name=name,
-            layout=layout,
-            inputs=inputs,
-        )
-        self.constant_args = constant_args
-        self.kwargs = kwargs if kwargs else {}
-        self.output_view = output_view
-        self.op_overload = op_overload
-        self.set_cpp_kernel_name(cpp_kernel_name)
-        self.set_python_kernel_name(python_kernel_name)
-        self.ordered_kwargs_for_cpp_kernel = ordered_kwargs_for_cpp_kernel
-        self.collect_arg_kwarg_properties()
-        self.unbacked_bindings = {}
-        self.mutation_outputs = []
+    def __post_init__(self):
         self.fx_node = V.graph.current_node
 
     def get_outputs(self) -> List[Buffer]:
@@ -5159,7 +5110,6 @@ class ExternKernel(InputsKernel):
     __repr__ = __str__
 
 
-@ir_dataclass(frozen=False)
 class ExternKernelOut(ExternKernel):
     def codegen(self, wrapper):
         self.codegen_comment(wrapper)
@@ -5276,6 +5226,7 @@ class ExternKernelAlloc(ExternKernel):
         raise NotImplementedError
 
 
+@ir_dataclass(frozen=False)
 class MutationOutput(Buffer):
     """
     An output buffer that represents the mutation of a pre-existing buffer
@@ -5368,6 +5319,7 @@ class TMADescriptor(ExternKernel):
         wrapper.generate_tma_descriptor(self)
 
 
+@ir_dataclass(frozen=False)
 class UserDefinedTritonKernel(ExternKernel):
     def get_kernel_and_configs(self):
         from triton.runtime.autotuner import Autotuner
@@ -5488,6 +5440,7 @@ class UserDefinedTritonKernel(ExternKernel):
         return self.device
 
 
+@ir_dataclass(frozen=False)
 class InplaceBernoulliFallback(ExternKernel):
     """
     This needs to be a custom class to handle mutation properly
@@ -5530,6 +5483,7 @@ class InplaceBernoulliFallback(ExternKernel):
 
 
 # Used to deal with torch.complex types
+@ir_dataclass(frozen=False)
 class InplaceCopyFallback(ExternKernel):
     """
     This needs to be a custom class to handle mutation properly
@@ -5578,6 +5532,7 @@ class InplaceCopyFallback(ExternKernel):
         return result
 
 
+@ir_dataclass(frozen=False)
 class MutatingFirstArgExternKernel(ExternKernel):
     """
     This needs to be a custom class to handle mutation properly
@@ -5605,6 +5560,7 @@ class MutatingFirstArgExternKernel(ExternKernel):
         return True
 
 
+@ir_dataclass(frozen=False)
 class ResizeStorageBytes(MutatingFirstArgExternKernel):
     def __init__(self, variable, new_size):
         assert isinstance(new_size, int), "TODO: dynamic shapes"
@@ -5644,6 +5600,7 @@ class SetSourceTensorKernel(ExternKernelAlloc):
         return [self.inputs[0].get_name(), self.inputs[1].get_name()]
 
 
+@ir_dataclass(frozen=False)
 class ScatterFallback(ExternKernel):
     """
     This needs to be a custom class to handle mutation properly.
@@ -5719,6 +5676,7 @@ class ScatterFallback(ExternKernel):
         V.graph.register_operation(self)
 
 
+@ir_dataclass(frozen=False)
 class IndexPutFallback(ExternKernel):
     """
     This needs to be a custom class to handle mutation and indices properly
@@ -5802,6 +5760,7 @@ class DeviceCopy(ExternKernelOut):
             wrapper.codegen_device_copy(args[0], self.codegen_reference(), args[1])
 
 
+@ir_dataclass(frozen=False)
 class DynamicScalar(ExternKernel):
     """
     The result of a call to aten._local_scalar_dense.
@@ -5826,6 +5785,7 @@ class DynamicScalar(ExternKernel):
         wrapper.codegen_dynamic_scalar(self)
 
 
+@ir_dataclass(frozen=False)
 class AssertScalar(ExternKernel):
     """
     The result of a call to aten._assert_scalar
@@ -6264,10 +6224,10 @@ class FallbackKernel(ExternKernelAlloc):
     @staticmethod
     def tensor_to_layout(output: torch.Tensor):
         return FixedLayout(
-            output.device,
-            output.dtype,
-            convert_shape_to_inductor(output.size()),
-            convert_shape_to_inductor(output.stride()),
+            device=output.device,
+            dtype=output.dtype,
+            size=convert_shape_to_inductor(output.size()),
+            stride=convert_shape_to_inductor(output.stride()),
         )
 
     @classmethod
@@ -6345,7 +6305,6 @@ class FallbackKernel(ExternKernelAlloc):
         return super().apply_constraint()
 
 
-@ir_dataclass(frozen=False)
 class ComplexView(FallbackKernel):
     """View a complex number as two dtyped numbers or vice versa"""
 
@@ -6355,25 +6314,6 @@ class ComplexView(FallbackKernel):
     def get_inputs_that_alias_output(self):
         # Signal to codegen that our output buffer isn't safe to reuse
         return [self.inputs[0].get_name()]
-
-    def __init__(
-        self,
-        layout,
-        kernel,
-        tensor_args,
-        nontensor_args,
-        unflatten_args,
-        *,
-        unbacked_bindings=None,
-    ):
-        super().__init__(
-            layout,
-            kernel,
-            tensor_args,
-            nontensor_args,
-            unflatten_args,
-            unbacked_bindings=unbacked_bindings,
-        )
 
 
 @ir_dataclass
@@ -6495,12 +6435,14 @@ class MutableBox(IRNode):
     __repr__ = __str__
 
 
+@ir_dataclass(frozen=False)
 class TensorBox(MutableBox):
     @staticmethod
     def create(data):
         return TensorBox(StorageBox(data))
 
 
+@ir_dataclass(frozen=False)
 class StorageBox(MutableBox):
     def is_input_buffer(self):
         if isinstance(self.data, (InputBuffer, ReinterpretView)):
@@ -6556,7 +6498,7 @@ class StorageBox(MutableBox):
         ):
             self.realize()
 
-    def has_exceeded_max_reads(self):
+    def has_exceeded_max_reads(self) -> bool:
         return isinstance(self.data, Pointwise) and (
             self.num_reads() > config.realize_acc_reads_threshold
             or self.has_large_inner_fn()
@@ -6614,7 +6556,7 @@ class Conditional(ExternKernel):
 
     def __init__(
         self,
-        predicate: IRNode,
+        predicate: TensorBox,
         operands: List[TensorBox],
         true_subgraph: Subgraph,
         false_subgraph: Subgraph,
@@ -6852,6 +6794,7 @@ class WhileLoop(ExternKernel):
         wrapper.codegen_while_loop(self)
 
 
+@ir_dataclass(frozen=False)
 class EffectfulKernel(FallbackKernel):
     def __init__(
         self,
@@ -7083,11 +7026,11 @@ class _WaitKernel(_CollectiveKernel):
             ) = cls.process_kernel(kernel, inp)
         assert not unbacked_bindings, f"{kernel} {unbacked_bindings}"
         packed = cls(
-            NoneLayout(device=inp.get_device()),
-            kernel,
-            tensor_args,
-            non_tensor_args,
-            unflatten_args,
+            layout=NoneLayout(device=inp.get_device()),
+            kernel=kernel,
+            tensor_args=tensor_args,
+            nontensor_args=non_tensor_args,
+            unflatten_args=unflatten_args,
         )
         packed.mutation_outputs.append(
             MutationOutput(NoneLayout(device=inp.get_device()), inp, packed)
