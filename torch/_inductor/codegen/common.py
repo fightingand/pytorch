@@ -2405,7 +2405,8 @@ class KernelTemplate:
         """
 
         try:
-            choices.append(self.generate(**kwargs))
+            choice = self.generate(**kwargs)
+            choices.append(choice)
             return None
         except NotImplementedError as e:
             return e
