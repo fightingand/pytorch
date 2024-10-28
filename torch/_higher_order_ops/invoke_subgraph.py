@@ -15,9 +15,10 @@ from torch._higher_order_ops.utils import (
     get_dummy_aot_autograd_config,
     prepare_fw_with_masks,
     reenter_make_fx,
+    register_hop_fake,
+    register_hop_fake_tensor_cache_key_validation,
 )
 from torch._ops import HigherOrderOperator
-from torch._subclasses import FakeTensorMode
 from torch._subclasses.functional_tensor import disable_functional_mode
 from torch.fx.experimental.proxy_tensor import (
     disable_proxy_modes_tracing,
@@ -33,6 +34,8 @@ invoke_subgraph_counter = 0
 class InvokeSubgraphHOP(HigherOrderOperator):
     def __init__(self) -> None:
         super().__init__("invoke_subgraph")
+        self.tags = ()
+        self.is_view = False
 
     # identifier is setup by upper part of the stack. This helps us in
     # identifying two invoke_subgraph calls have same subgraph.
@@ -232,10 +235,48 @@ def _(ctx, subgraph, identifier, operands):
     return ctx.wrap_tensors(out)
 
 
-@invoke_subgraph.py_impl(FakeTensorMode)
-def _(mode, subgraph, identifier, operands):
-    # TODO(anijain2305) - Implement fake tensor caching.
+@register_hop_fake(invoke_subgraph)
+def _(subgraph, identifier, operands):
     return subgraph(*operands)
+
+
+@register_hop_fake_tensor_cache_key_validation(invoke_subgraph)
+def _(mode, subgraph, identifier, operands):
+    from torch._subclasses.fake_tensor import _BypassDispatchCache
+
+    if not isinstance(subgraph, torch.fx.GraphModule):
+        raise _BypassDispatchCache("invoke_subgraph does not have a Fx graph module")
+
+    invoke_subgraph_cache = get_invoke_subgraph_cache()
+    if invoke_subgraph_cache:
+        already_validated = invoke_subgraph_cache.get_fake_tensor_cache_key_validation(
+            identifier
+        )
+        # The value can be None, True, False
+        # None - Seen for the first time
+        # True - already seen and validated
+        # False - already seen and decided not to cache
+        if already_validated:
+            return
+        elif already_validated is False:
+            raise _BypassDispatchCache(
+                f"invoke_subgraph with {identifier} failed key validation earlier"
+            )
+
+    for node in subgraph.graph.nodes:
+        if node.op == "call_function":
+            try:
+                mode._validate_cache_key(node.target, [], {})
+            except _BypassDispatchCache:
+                # fake tensor caching cant be done
+                invoke_subgraph_cache.set_fake_tensor_cache_key_validation(
+                    identifier, False
+                )
+                raise
+    # fake tensor caching can be done
+    if invoke_subgraph_cache:
+        invoke_subgraph_cache.add_fake_tensor_cache_key_validation(identifier, True)
+    return
 
 
 @invoke_subgraph.py_impl(ProxyTorchDispatchMode)
