@@ -898,15 +898,15 @@ def add_compilation_metrics_to_chromium(c: CompilationMetrics):
         fail_user_frame_filename=c.fail_user_frame_filename,
         fail_user_frame_lineno=c.fail_user_frame_lineno,
         # Sets aren't JSON serializable
-        non_compliant_ops=list(c.non_compliant_ops)
-        if c.non_compliant_ops is not None
-        else None,
-        compliant_custom_ops=list(c.compliant_custom_ops)
-        if c.compliant_custom_ops is not None
-        else None,
-        restart_reasons=list(c.restart_reasons)
-        if c.restart_reasons is not None
-        else None,
+        non_compliant_ops=(
+            list(c.non_compliant_ops) if c.non_compliant_ops is not None else None
+        ),
+        compliant_custom_ops=(
+            list(c.compliant_custom_ops) if c.compliant_custom_ops is not None else None
+        ),
+        restart_reasons=(
+            list(c.restart_reasons) if c.restart_reasons is not None else None
+        ),
         dynamo_time_before_restart_s=c.dynamo_time_before_restart_s,
         has_guarded_code=c.has_guarded_code,
         dynamo_config=c.dynamo_config,
@@ -978,6 +978,7 @@ class ChromiumEventLogger:
         # Generate a unique id for this logger, which we can use in scuba to filter down
         # to a single python run.
         self.id_ = str(uuid.uuid4())
+        self.listeners: List[Callable[[str, int, Dict[str, Any], str], None]] = []
 
         # TODO: log to init/id tlparse after I add support for it
         log.info("ChromiumEventLogger initialized with id %s", self.id_)
@@ -1002,6 +1003,22 @@ class ChromiumEventLogger:
             event_data[event_name] = {}
         event_data[event_name].update(kwargs)
 
+    def add_listener(
+        self, listener: Callable[[str, int, Dict[str, Any], str], None]
+    ) -> None:
+        self.listeners.append(listener)
+
+    def remove_listener(
+        self, listener: Callable[[str, int, Dict[str, Any], str], None]
+    ) -> None:
+        self.listeners.remove(listener)
+
+    def notify_listeners(
+        self, event_name: str, time_ns: int, metadata: Dict[str, Any], event_type: str
+    ) -> None:
+        for listener in self.listeners:
+            listener(event_name, time_ns, metadata, event_type)
+
     def log_event_start(
         self,
         event_name: str,
@@ -1016,6 +1033,7 @@ class ChromiumEventLogger:
         """
         compile_id = str(torch._guards.CompileContext.current_compile_id())
         metadata["compile_id"] = compile_id
+        self.notify_listeners(event_name, time_ns, metadata, "B")
         self._log_timed_event(
             event_name,
             time_ns,
@@ -1087,6 +1105,7 @@ class ChromiumEventLogger:
             stack.pop()
 
         log_chromium_event_internal(event, stack, self.id_, start_time_ns)
+        self.notify_listeners(event_name, time_ns, event_metadata, "E")
         # Finally pop the actual event off the stack
         stack.pop()
 
@@ -1153,6 +1172,7 @@ class ChromiumEventLogger:
             expect_trace_id=True,
         )
         # Log an instant event with the same start and end time
+        self.notify_listeners(event_name, time_ns, metadata, "")
         log_chromium_event_internal(event, self.get_stack(), self.id_, time_ns)
 
 
