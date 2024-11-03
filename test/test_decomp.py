@@ -3,7 +3,6 @@
 import functools
 import itertools
 import re
-import unittest
 from collections import defaultdict
 from functools import partial
 
@@ -36,7 +35,6 @@ from torch.testing._internal.common_utils import (
     skipIfCrossRef,
     skipIfTorchDynamo,
     suppress_warnings,
-    TEST_WITH_ASAN,
     TEST_WITH_SLOW,
     TestCase,
     unMarkDynamoStrictTest,
@@ -545,7 +543,6 @@ class TestDecomp(TestCase):
     # NB: This actually overlaps with test_comprehensive, but it only
     # runs on things that are definitely decomposed so it's a lot faster
     # to run
-    @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
     @onlyNativeDeviceTypes
     @skipIfCrossRef
     @suppress_warnings
@@ -553,7 +550,6 @@ class TestDecomp(TestCase):
     def test_quick(self, device, dtype, op):
         self.do_cross_ref(device, dtype, op, run_all=False)
 
-    @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
     @skipOps("TestDecomp", "test_quick_core_backward", core_backward_failures)
     @onlyNativeDeviceTypes
     @skipIfCrossRef
@@ -571,7 +567,6 @@ class TestDecomp(TestCase):
                 torch.autograd.gradcheck(func, args)
             self.check_decomposed(aten_name, mode)
 
-    @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
     @onlyNativeDeviceTypes
     @skipIfCrossRef
     @skipOps("TestDecomp", "test_comprehensive", comprehensive_failures)
@@ -663,7 +658,6 @@ class TestDecomp(TestCase):
         self.assertEqual(ref, res)
         self.assertEqual(noise_ref, noise_res)
 
-    @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
     @suppress_warnings
     @tf32_off()
     # only tests RNNs since we have py dispsatcher decomps for them
@@ -1077,7 +1071,6 @@ class DecompOneOffTests(TestCase):
         self.assertEqual(exp, exp_ref)
         self.assertFalse(exp.isinf().any())
 
-    @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
     @skipIfCrossRef
     @onlyCUDA
     def test_amp_batch_norm_backward(self):
