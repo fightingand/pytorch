@@ -9,7 +9,7 @@ from functorch.experimental import control_flow
 from functorch.experimental.control_flow import cond, UnsupportedAliasMutationException
 from torch._higher_order_ops.associative_scan import associative_scan
 from torch._higher_order_ops.scan import _fake_scan, scan
-from torch._higher_order_ops.while_loop import while_loop
+from torch._higher_order_ops.while_loop import _fake_while_loop, while_loop
 from torch._subclasses.functional_tensor import (
     CppFunctionalizeAPI,
     FunctionalTensor,
@@ -78,12 +78,6 @@ def _fake_map(f, x, *args):
     for xp in x_pytrees:
         zs.append(f(xp, *args))
     return _stack_pytree(zs)
-
-
-def _fake_while_loop(cond_fn, body_fn, operands):
-    while cond_fn(*operands):
-        operands = body_fn(*operands)
-    return operands
 
 
 def _fake_associative_scan(combine_fn, xs, dim, reverse=False):
@@ -338,6 +332,15 @@ class TestControlFlow(TestCase):
     def setUp(self):
         torch._dynamo.reset()
         super().setUp()
+
+    def check_autograd(self, result, result_exp, params):
+        result_flatten, _ = pytree.tree_flatten(result)
+        result_exp_flatten, _ = pytree.tree_flatten(result_exp)
+        grad_exp_init = [torch.ones_like(el) for el in result_exp_flatten]
+        expected_grads = torch.autograd.grad(result_exp_flatten, params, grad_exp_init)
+        grad_init = [torch.ones_like(el) for el in result_flatten]
+        grads = torch.autograd.grad(result_flatten, params, grad_init)
+        self.assertEqual(grads, expected_grads, atol=6e-05, rtol=6e-06)
 
     def test_cond_no_trace(self):
         def true_fn(x):
@@ -1120,17 +1123,85 @@ def forward(self, pred_1, x_1):
         self.assertEqual(expected, res)
 
     @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
-    def test_while_loop_gpu(self):
+    @parametrize("autograd", [False, True])
+    def test_while_loop_gpu(self, autograd):
         def cond_fn(x):
             return x.sum() < 10
 
         def body_fn(x):
-            return (x + 1,)
+            return (x.abs() * 1.234,)
 
-        x = torch.zeros(1, device="cuda")
+        x = torch.randn(1, device="cuda", requires_grad=autograd)
         res = while_loop(cond_fn, body_fn, (x,))
         expected = _fake_while_loop(cond_fn, body_fn, (x,))
         self.assertEqual(expected, res)
+
+        if autograd:
+            self.check_autograd(res, expected, (x,))
+
+    @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
+    @parametrize("autograd", [False, True])
+    def test_while_loop_tuple_gpu(self, autograd):
+        def cond_fn(x, y):
+            return y.sum() < 5.0
+
+        def body_fn(x, y):
+            return (torch.sin(x) * x + 5.0, y + 1)
+
+        x = torch.randn(1, device="cuda", requires_grad=autograd)
+        y = torch.randn(2, 3, device="cuda", requires_grad=autograd)
+        inp = (x, y)
+
+        res = while_loop(cond_fn, body_fn, inp)
+        expected = _fake_while_loop(cond_fn, body_fn, inp)
+        self.assertEqual(expected, res)
+
+        if autograd:
+            self.check_autograd(res, expected, inp)
+
+    @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
+    @parametrize("autograd", [False, True])
+    def test_while_loop_tuple_mixed_gpu(self, autograd):
+        def cond_fn(x, y, z):
+            return x.sum() < 7.0
+
+        def body_fn(x, y, z):
+            return (x + 1, y * x, z + 2)
+
+        x = torch.ones(1, dtype=torch.float32, device="cuda", requires_grad=autograd)
+        y = torch.ones(1, dtype=torch.float32, device="cuda", requires_grad=autograd)
+        z = torch.ones(2, dtype=torch.float32, device="cuda", requires_grad=autograd)
+        inp = (x, y, z)
+
+        res = while_loop(cond_fn, body_fn, inp)
+        expected = _fake_while_loop(cond_fn, body_fn, inp)
+        self.assertEqual(expected, res)
+
+        if autograd:
+            self.check_autograd(res, expected, inp)
+
+    @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
+    @parametrize("autograd", [False, True])
+    def test_while_loop_additional_inputs(self, autograd):
+        def cond_fn(x):
+            return x.sum() < 4.0
+
+        W = torch.randn(2, 2, device="cuda", requires_grad=True)
+
+        def body_fn(x):
+            return (torch.abs(x @ W) + x,)
+
+        x = torch.randn(
+            2, 2, dtype=torch.float32, device="cuda", requires_grad=autograd
+        )
+        inp = (x,)
+
+        res = while_loop(cond_fn, body_fn, inp)
+        expected = _fake_while_loop(cond_fn, body_fn, inp)
+        self.assertEqual(expected, res)
+
+        if autograd:
+            self.check_autograd(res, expected, (x, W))
 
     def test_map_illegal_inputs(self):
         def f(x, y):
