@@ -70,7 +70,7 @@ class StatelessDataLoader : public DataLoaderBase<
          this->options_.drop_last)) {
       return std::nullopt;
     }
-    AT_ASSERT(indices->size() > 0);
+    TORCH_INTERNAL_ASSERT(indices->size() > 0);
     return indices;
   }
 

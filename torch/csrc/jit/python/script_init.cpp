@@ -1890,7 +1890,7 @@ void initJitScriptBindings(PyObject* module) {
          bool restore_shapes = false) {
         std::optional<at::Device> optional_device;
         if (!map_location.is_none()) {
-          AT_ASSERT(THPDevice_Check(map_location.ptr()));
+          TORCH_INTERNAL_ASSERT(THPDevice_Check(map_location.ptr()));
           optional_device =
               reinterpret_cast<THPDevice*>(map_location.ptr())->device;
         }
@@ -1915,7 +1915,7 @@ void initJitScriptBindings(PyObject* module) {
          const std::string& ts_id) {
         std::optional<at::Device> optional_device;
         if (!map_location.is_none()) {
-          AT_ASSERT(THPDevice_Check(map_location.ptr()));
+          TORCH_INTERNAL_ASSERT(THPDevice_Check(map_location.ptr()));
           optional_device =
               reinterpret_cast<THPDevice*>(map_location.ptr())->device;
         }
@@ -1936,7 +1936,7 @@ void initJitScriptBindings(PyObject* module) {
         std::istringstream in(buffer);
         std::optional<at::Device> optional_device;
         if (!map_location.is_none()) {
-          AT_ASSERT(THPDevice_Check(map_location.ptr()));
+          TORCH_INTERNAL_ASSERT(THPDevice_Check(map_location.ptr()));
           optional_device =
               reinterpret_cast<THPDevice*>(map_location.ptr())->device;
         }
@@ -1956,7 +1956,7 @@ void initJitScriptBindings(PyObject* module) {
       [](const std::string& filename, py::object map_location) {
         std::optional<at::Device> optional_device;
         if (!map_location.is_none()) {
-          AT_ASSERT(THPDevice_Check(map_location.ptr()));
+          TORCH_INTERNAL_ASSERT(THPDevice_Check(map_location.ptr()));
           optional_device =
               reinterpret_cast<THPDevice*>(map_location.ptr())->device;
         }
@@ -1968,7 +1968,7 @@ void initJitScriptBindings(PyObject* module) {
         std::istringstream in(buffer);
         std::optional<at::Device> optional_device;
         if (!map_location.is_none()) {
-          AT_ASSERT(THPDevice_Check(map_location.ptr()));
+          TORCH_INTERNAL_ASSERT(THPDevice_Check(map_location.ptr()));
           optional_device =
               reinterpret_cast<THPDevice*>(map_location.ptr())->device;
         }
