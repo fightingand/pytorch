@@ -19,6 +19,7 @@ from torch.fx.experimental.proxy_tensor import make_fx
 from torchgen.utils import dataclass_repr
 
 from .. import config
+from . import fx_passes
 from .functional_utils import (
     assert_functional_graph,
     propagate_input_mutation_stacktraces,
@@ -177,6 +178,11 @@ def aot_dispatch_base_graph(
         output_node.args = ((*add_nodes, *output_node.args[0]),)
 
         hook.remove()  # type: ignore[possibly-undefined]
+
+    if not torch._dynamo.config.skip_fsdp_hooks:
+        fw_module.graph = fx_passes.raise_fsdp2_backward_all_gather_ops_if_applicable(
+            fw_module.graph
+        )
 
     # As long as we opted to remove input mutations, then
     # there should be *NO* mutating ops in the graph at this point.
