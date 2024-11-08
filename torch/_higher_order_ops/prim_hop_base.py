@@ -100,7 +100,7 @@ class PrimHOPBase(HigherOrderOperator, abc.ABC):
     def _call_ProxyTorchDispatchMode(
         self, proxy_mode, subgraph, operands, *_, **kwargs
     ):
-        traced_graph = reenter_make_fx(subgraph)(*operands)
+        traced_graph = self._trace_subgraph(proxy_mode, subgraph, operands, **kwargs)
         assert isinstance(proxy_mode.tracer, torch.fx.Tracer)
         qualname = proxy_mode.tracer.get_fresh_qualname("subgraph")
         proxy_mode.tracer.root.register_module(qualname, traced_graph)
@@ -117,6 +117,10 @@ class PrimHOPBase(HigherOrderOperator, abc.ABC):
             out, out_proxy, constant=None, tracer=proxy_mode.tracer  # type: ignore[arg-type]
         )
 
+    def _trace_subgraph(self, proxy_mode, subgraph, operands, *_, **kwargs):
+        traced_graph = reenter_make_fx(subgraph)(*operands)
+        return traced_graph
+
     def _call_FakeTensorMode(self, mode, subgraph, operands, *_, **kwargs):
         # TODO: this should probably route through FakeTensorMode to reuse caching
         with mode:
@@ -132,6 +136,11 @@ class PrimHOPBase(HigherOrderOperator, abc.ABC):
             )
             out = self(functionalized_subgraph, unwrapped_operands, **kwargs)
         return ctx.wrap_tensors(out)
+
+    def _dynamo_call_function_hook(self, tx, body_gmod, kwargs):
+        from torch._dynamo.variables.higher_order_ops import add_subgraph
+
+        return add_subgraph(tx, "subgraph", body_gmod), kwargs
 
 
 class PrimHOPBaseFunction(torch.autograd.Function):
