@@ -545,30 +545,29 @@ Example::
     tensor([0.0225, 0.1156, 0.9801])
 """.format(**common_args))
 
-def betaln(a, b):
-    r"""
-    betainc(input, a, b, out=None) -> Tensor
+betaln = _add_docstr(_special.special_betaln,
+                 r"""
+betainc(input, a, b, out=None) -> Tensor
 
-    Computes the natural logarithm of absolute value of Beta function (as defined below)
-    for each element of :attr:`input`,  :attr:`a`, :attr:`b`.
-    .. math::
-        \log\,|\,\Beta(a,b)\,|
-    Similar to SciPy's `scipy.special.betaln`.
-    """ + r"""
-    Args:
-        a (Tensor) : (:attr:`a > 0`)
-        b (Tensor) : (:attr:`b > 0`)
-    Keyword args:
-        {out}
-    Example::
-        >>> torch.special.betaln( torch.tensor([-1, 0, 1, float('inf'), float('nan')]), torch.tensor(9))
-        tensor([    inf,     inf, -2.1972,     nan,     nan])
-        >>> torch.special.betaln(torch.tensor([2, 4, 5]), torch.tensor(9))
-        tensor([-4.4998, -7.5909, -8.7695])
-        >>> torch.special.betaln(torch.tensor(6), torch.tensor(9))
-        tensor(-9.7991)
-    """
-    return torch.lgamma(a) + torch.lgamma(b) - torch.lgamma(a + b)
+Computes the natural logarithm of absolute value of Beta function (as defined below)
+for each element of :attr:`input`,  :attr:`a`, :attr:`b`.
+.. math::
+    \log\,|\,\Beta(a,b)\,|
+Similar to SciPy's `scipy.special.betaln`.
+""" + r"""
+Args:
+    a (Tensor) : (:attr:`a > 0`)
+    b (Tensor) : (:attr:`b > 0`)
+Keyword args:
+    {out}
+Example::
+    >>> torch.special.betaln( torch.tensor([-1, 0, 1, float('inf'), float('nan')]), torch.tensor(9))
+    tensor([    inf,     inf, -2.1972,     nan,     nan])
+    >>> torch.special.betaln(torch.tensor([2, 4, 5]), torch.tensor(9))
+    tensor([-4.4998, -7.5909, -8.7695])
+    >>> torch.special.betaln(torch.tensor(6), torch.tensor(9))
+    tensor(-9.7991)
+""".format(**common_args))
 
 def beta(a, b):
     r"""
@@ -593,7 +592,7 @@ def beta(a, b):
         >>> torch.special.beta(torch.tensor(6), torch.tensor(9))
         tensor(5.5500e-05)
     """
-    return torch.exp(betaln(a, b))
+    return torch.exp(torch.special.betaln(a, b))
 
 i1 = _add_docstr(_special.special_i1,
                  r"""

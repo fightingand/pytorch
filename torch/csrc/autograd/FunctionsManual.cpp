@@ -7186,73 +7186,6 @@ Tensor values_backward(const Tensor& grad, const Tensor& self) {
   return grad_self;
 }
 
-Tensor _log_gamma_correction(const Tensor& x) {
-  const std::vector<double> const_vec = {
-        0.833333333333333e-01L,
-        -0.277777777760991e-02L,
-        0.793650666825390e-03L,
-        -0.595202931351870e-03L,
-        0.837308034031215e-03L,
-        -0.165322962780713e-02L,
-        };
-  Tensor minimax_coeff = at::tensor(const_vec, at::TensorOptions().dtype(x.dtype()).device(x.device()));
-
-  Tensor inverse_x = at::reciprocal(x);
-  Tensor inverse_x_squared = inverse_x * inverse_x;
-  Tensor accum = minimax_coeff[5];
-  for (int i = 4; i >= 0; i--) {
-    accum = accum * inverse_x_squared + minimax_coeff[i];
-  }
-  return accum * inverse_x;
-}
-
-Tensor _log_gamma_difference_big_y(const Tensor& x, const Tensor& y) {
-  at::ScalarType dtype = at::promoteTypes(x.scalar_type(), y.scalar_type());
-  auto options = at::TensorOptions().dtype(dtype).device(x.device());
-  const Tensor half = at::scalar_tensor(0.5, options);
-  const Tensor one = at::scalar_tensor(1.0, options);
-
-  Tensor cancelled_stirling = (-one * (x + y - half) * at::log1p(x / y)
-                               - x * at::log(y) + x);
-
-  Tensor correction = _log_gamma_correction(y) - _log_gamma_correction(x + y);
-  return correction + cancelled_stirling;
-}
-
-Tensor _lbeta(const Tensor& x, const Tensor& y) {
-  //dtype
-  at::ScalarType dtype = at::promoteTypes(x.scalar_type(), y.scalar_type());
-  auto options = at::TensorOptions().dtype(dtype).device(x.device());
-  const Tensor half = at::scalar_tensor(0.5, options);
-  const Tensor two = at::scalar_tensor(2.0, options);
-  const Tensor eight = at::scalar_tensor(8.0, options);
-
-  Tensor _x = at::minimum(x, y);
-  Tensor _y = at::maximum(x, y);
-
-  Tensor log2pi = at::log(two * at::scalar_tensor(c10::pi<double>, at::TensorOptions().dtype(dtype).device(x.device())));
-
-  // Two large arguments case: _y >= _x >= 8
-  Tensor log_beta_two_large = (half * log2pi
-                               - half * at::log(_y)
-                               + _log_gamma_correction(_x)
-                               + _log_gamma_correction(_y)
-                               - _log_gamma_correction(_x + _y)
-                               + (_x - half) * at::log(_x / (_x + _y))
-                               - _y * at::log1p(_x / _y));
-  // Small arguments case: _x < 8, _y >= 8.
-  Tensor log_beta_one_large = at::lgamma(_x) + _log_gamma_difference_big_y(_x, _y);
-
-  // Small arguments case: _x <= _y < 8.
-  Tensor log_beta_small = at::lgamma(_x) + at::lgamma(_y) - at::lgamma(_x + _y);
-
-  return at::where(_x >= eight,
-                   log_beta_two_large,
-                   at::where(_y >= eight,
-                             log_beta_one_large,
-                             log_beta_small));
-}
-
 std::tuple<Tensor, Tensor> _betainc_even_partial_numerator(const int32_t iteration, const Tensor& a, const Tensor& b, const Tensor& x) {
   // Even partial numerator used in the continued fraction for betainc.
   /*
@@ -7471,7 +7404,7 @@ std::tuple<Tensor, Tensor> _betainc_der_continued_fraction(const Tensor& a, cons
   const Tensor& cf_grad_a = std::get<1>(_ret_lentz);
   const Tensor& cf_grad_b = std::get<2>(_ret_lentz);
 
-  Tensor normalization = at::exp(at::xlogy(_a, _x) + at::special_xlog1py(_b, -_x) - at::log(_a) - _lbeta(_a, _b));
+  Tensor normalization = at::exp(at::xlogy(_a, _x) + at::special_xlog1py(_b, -_x) - at::log(_a) - at::special_betaln(_a, _b));
   Tensor digamma_apb = at::special_digamma(_a + _b);
   Tensor grad_a = normalization * (cf_grad_a + cf * (at::log(_x) - at::reciprocal(_a) + digamma_apb - at::digamma(_a)));
   Tensor grad_b = normalization * (cf_grad_b + cf * (at::log1p(-_x) + digamma_apb - at::digamma(_b)));
@@ -7583,7 +7516,7 @@ std::tuple<Tensor, Tensor> _betainc_der_power_series(const Tensor& a, const Tens
   const Tensor& series_grad_a = gradients.at(1);
   const Tensor& series_grad_b = gradients.at(2);
 
-  Tensor normalization = at::exp(at::xlogy(safe_a, safe_x) - _lbeta(safe_a, safe_b));
+  Tensor normalization = at::exp(at::xlogy(safe_a, safe_x) - at::special_betaln(safe_a, safe_b));
   Tensor digamma_apb = at::digamma(safe_a + safe_b);
   Tensor grad_a = normalization * (series_grad_a + series_sum * (digamma_apb - at::digamma(safe_a) + at::log(safe_x)));
   Tensor grad_b = normalization * (series_grad_b + series_sum * (digamma_apb - at::digamma(safe_b)));
@@ -7618,7 +7551,7 @@ static inline std::tuple<Tensor, Tensor, Tensor> _betainc_partials(const Tensor&
   /* The partial derivative of betainc with respect to x can be obtained
    * directly by using the expression given here:
    * http://functions.wolfram.com/06.21.20.0001.01 */
-  Tensor grad_x = at::exp(at::xlogy(_a - one, _x) +  at::special_xlog1py(_b - one, -_x) - _lbeta(_a, _b));
+  Tensor grad_x = at::exp(at::xlogy(_a - one, _x) +  at::special_xlog1py(_b - one, -_x) - at::special_betaln(_a, _b));
 
   /* The partial derivatives of betainc with respect to a and b are computed
    * by using forward mode. */
@@ -7714,7 +7647,7 @@ Tensor special_betainc_backward_x(const Tensor& grad, const Tensor& a, const Ten
   const Tensor& _b = b.to(dtype);
   const Tensor& _x = x.to(dtype);
 
-  Tensor grad_x = at::exp(at::xlogy(_a - one, _x) +  at::special_xlog1py(_b - one, -_x) - _lbeta(_a, _b));
+  Tensor grad_x = at::exp(at::xlogy(_a - one, _x) +  at::special_xlog1py(_b - one, -_x) - at::special_betaln(_a, _b));
 
   Tensor result_is_nan = (a <= zero) | (b <= zero) | (x < zero) | (x > one);
   const Tensor nan = AT_DISPATCH_FLOATING_TYPES_AND2(
