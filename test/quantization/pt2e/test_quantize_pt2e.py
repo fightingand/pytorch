@@ -40,7 +40,6 @@ from torch.ao.quantization.quantizer.xnnpack_quantizer_utils import (
 )
 from torch.export import export_for_training
 from torch.fx import Node
-from torch.testing._internal.common_device_type import instantiate_device_type_tests
 from torch.testing._internal.common_quantization import (
     NodeSpec as ns,
     PT2EQuantizationTestCase,
@@ -50,6 +49,7 @@ from torch.testing._internal.common_quantization import (
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
+    run_tests,
     skipIfHpu,
     TemporaryFileName,
     TEST_CUDA,
@@ -1863,6 +1863,7 @@ class TestQuantizePT2E(PT2EQuantizationTestCase):
             torch.ops.aten.batch_norm.default,
         )
 
+    @parametrize("device", ["cpu"] + (["cuda"] if TEST_CUDA else []) + (["hpu"] if TEST_HPU else []))
     def test_move_exported_model_bn(self, device):
         """
         Test switching batch_norm behavior between train and eval modes using
@@ -2339,10 +2340,61 @@ class TestQuantizePT2E(PT2EQuantizationTestCase):
         m = convert_pt2e(m)
         m(*example_inputs)
 
+    def test_cond_op(self):
+        m = TestHelperModules.Cond()
+        example_inputs = m.example_inputs()
+        m = export_for_training(m, example_inputs).module()
+        quantizer = XNNPACKQuantizer().set_global(
+            get_symmetric_quantization_config(),
+        )
+        gm = prepare_pt2e(m, quantizer)
+
+        from torch.ao.quantization.observer import ObserverBase
+
+        for node in gm.graph.nodes:
+            if node.target == torch.ops.higher_order.cond:
+                true_gm = getattr(gm, node.args[1].target)
+                for n in true_gm.graph.nodes:
+                    if n.target == torch.ops.aten.conv2d.default:
+                        assert n.meta.get("quantization_annotation", None) is not None
+                        input_act = n.args[0]
+                        weight = n.args[1]
+                        output = list(n.users)[0]
+                        for obs_node in [input_act, weight, output]:
+                            obs_ins = getattr(true_gm, obs_node.target)
+                            assert isinstance(obs_ins, ObserverBase)
+                false_gm = getattr(gm, node.args[2].target)
+                for n in false_gm.graph.nodes:
+                    if n.target == torch.ops.aten.conv2d.default:
+                        assert n.meta.get("quantization_annotation", None) is not None
+                        input_act = n.args[0]
+                        weight = n.args[1]
+                        output = list(n.users)[0]
+                        for obs_node in [input_act, weight, output]:
+                            obs_ins = getattr(false_gm, obs_node.target)
+                            assert isinstance(obs_ins, ObserverBase)
+
+        gm(*example_inputs)
+        gm = convert_pt2e(gm)
+
+        node_occurrences = {
+            ns.call_function(
+                torch.ops.quantized_decomposed.quantize_per_tensor.default
+            ): 3,
+            ns.call_function(
+                torch.ops.quantized_decomposed.dequantize_per_tensor.default
+            ): 3,
+        }
+        for node in gm.graph.nodes:
+            if node.target == torch.ops.higher_order.cond:
+                true_gm = getattr(gm, node.args[1].target)
+                self.checkGraphModuleNodes(
+                    true_gm, expected_node_occurrence=node_occurrences
+                )
+                false_gm = getattr(gm, node.args[2].target)
+                self.checkGraphModuleNodes(
+                    false_gm, expected_node_occurrence=node_occurrences
+                )
+
 
 instantiate_parametrized_tests(TestQuantizePT2E)
-
-devices = ["cpu", "cuda"]
-if TEST_HPU:
-    devices.append("hpu")
-instantiate_device_type_tests(TestQuantizePT2E, globals(), only_for=devices)
