@@ -545,6 +545,8 @@ Example::
     tensor([0.0225, 0.1156, 0.9801])
 """.format(**common_args))
 
+betaincinv = _add_docstr(_special.special_betaincinv, "")
+
 betaln = _add_docstr(_special.special_betaln,
                  r"""
 betainc(input, a, b, out=None) -> Tensor
