@@ -9104,8 +9104,6 @@ def forward(self, x):
             }
             _load_dynamic_shapes(spec, from_dict=True)
 
-    @testing.expectedFailureSerDer  # TODO(pianpwk): PowByNatural valuerange deserialization
-    @testing.expectedFailureSerDerNonStrict
     @testing.expectedFailureRetraceabilityNonStrict
     def test_dim_dynamic(self):
         dynamic = Dim.DYNAMIC
