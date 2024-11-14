@@ -737,15 +737,14 @@ class AOTInductorTestsTemplate:
         example_inputs = (x, y)
         self.check_model(Model(), example_inputs, dynamic_shapes=dynamic_shapes)
 
-    @unittest.skipIf(
-        not torch.cuda.is_available() or torch.cuda.get_device_capability() < (9, 0),
-        "FP8 is only supported on H100+",
-    )
     @skipIfRocm  # _scaled_mm_out_cuda  is not compiled for ROCm platform
     def test_fp8(self):
-        # cuda only
-        if self.device != "cuda":
-            return
+        if self.device == "cuda" and not SM90OrLater:
+            raise unittest.SkipTest("FP8 is only supported on H100+")
+        if self.device == "cpu" and not torch.backends.mkldnn.is_available():
+            raise unittest.SkipTest("MKL-DNN build is disabled")
+        if self.device == "cpu" and not torch.cpu._is_amx_tile_supported():
+            raise unittest.SkipTest("FP8 cannot run on the current CPU platform")
 
         class Model(torch.nn.Module):
             def __init__(self, dtype):
@@ -766,16 +765,18 @@ class AOTInductorTestsTemplate:
 
         dtype = torch.float16
 
-        a_scale = torch.Tensor([1.0]).to(device="cuda")
-        b_scale = torch.Tensor([1.0]).to(device="cuda")
-        input_bias = torch.rand(32, device="cuda", dtype=dtype)
+        a_scale = torch.Tensor([1.0]).to(device=self.device)
+        b_scale = torch.Tensor([1.0]).to(device=self.device)
+        input_bias = torch.rand(32, device=self.device, dtype=dtype)
         weight_shape = (32, 16)
-        weight = torch.rand(*weight_shape, device="cuda", dtype=dtype).T
+        weight = torch.rand(*weight_shape, device=self.device, dtype=dtype).T
         a_inverse_scale = 1 / a_scale
         b_inverse_scale = 1 / b_scale
 
         x_shape = (16, 16)
-        x = torch.rand(*x_shape, device="cuda", dtype=dtype).to(torch.float8_e4m3fn)
+        x = torch.rand(*x_shape, device=self.device, dtype=dtype).to(
+            torch.float8_e4m3fn
+        )
         dim0_x = Dim("dim0_x", min=1, max=2048)
         dynamic_shapes = ({0: dim0_x}, None, None, None, None)
         self.check_model(
@@ -784,15 +785,14 @@ class AOTInductorTestsTemplate:
             dynamic_shapes=dynamic_shapes,
         )
 
-    @unittest.skipIf(
-        not torch.cuda.is_available() or torch.cuda.get_device_capability() < (9, 0),
-        "FP8 is only supported on H100+",
-    )
     @skipIfRocm  # _scaled_mm_out_cuda  is not compiled for ROCm platform
     def test_fp8_view_of_param(self):
-        # cuda only
-        if self.device != "cuda":
-            return
+        if self.device == "cuda" and not SM90OrLater:
+            raise unittest.SkipTest("FP8 is only supported on H100+")
+        if self.device == "cpu" and not torch.backends.mkldnn.is_available():
+            raise unittest.SkipTest("MKL-DNN build is disabled")
+        if self.device == "cpu" and not torch.cpu._is_amx_tile_supported():
+            raise unittest.SkipTest("FP8 cannot run on the current CPU platform")
 
         class Model(torch.nn.Module):
             def __init__(self, dtype, weight):
@@ -1478,7 +1478,7 @@ class AOTInductorTestsTemplate:
             example_inputs,
             dynamic_shapes=dynamic_shapes,
         )
-        aot_inductor_module = AOTIRunnerUtil.load("cuda", so_path)
+        aot_inductor_module = AOTIRunnerUtil.load(self.device, so_path)
         aot_inductor_module(*example_inputs)
 
         # Re-run where dynamic dim size is 0.
