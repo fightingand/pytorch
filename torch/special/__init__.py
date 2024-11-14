@@ -545,7 +545,13 @@ Example::
     tensor([0.0225, 0.1156, 0.9801])
 """.format(**common_args))
 
+def betaincc(x, a, b):
+    return  1 - torch.special.betainc(x, a, b)
+
 betaincinv = _add_docstr(_special.special_betaincinv, "")
+
+def betainccinv(y, a, b):
+    return torch.special.betaincinv(1 - y, a, b)
 
 betaln = _add_docstr(_special.special_betaln,
                  r"""
