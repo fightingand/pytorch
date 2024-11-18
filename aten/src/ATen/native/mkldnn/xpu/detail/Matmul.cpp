@@ -315,10 +315,6 @@ sycl::event scaled_matmul(
     }
   }
   dnnl::primitive_attr op_attr = dnnl::primitive_attr();
-  printf(
-      "%d\t%d\n",
-      scale_a.numel() == 1 ? 0 : 1 << 1,
-      scale_b.numel() == 1 ? 0 : 1 << 1);
   if (scale_a.dim())
     op_attr.set_scales_mask(DNNL_ARG_SRC, scale_a.numel() == 1 ? 0 : 1 << 1);
   if (scale_b.dim())
