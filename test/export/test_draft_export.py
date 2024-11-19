@@ -104,11 +104,17 @@ class TestDraftExport(TestCase):
                 return a + b
 
             class M(torch.nn.Module):
-                def forward(self, a, b):
-                    res = torch.ops.mylib.foo2(a, b)
-                    return res
+                def forward(self, a, b, c, d):
+                    res1 = torch.ops.mylib.foo2(a, b)
+                    res2 = torch.ops.mylib.foo2(c, d)
+                    return res1 @ res2
 
-            inp = (torch.ones(3, 3), torch.ones(3, 3))
+            inp = (
+                torch.ones(3, 4),
+                torch.ones(3, 4),
+                torch.ones(4, 5),
+                torch.ones(4, 5),
+            )
 
             ep, report = draft_export(M(), inp)
 
@@ -116,9 +122,43 @@ class TestDraftExport(TestCase):
             self.assertEqual(
                 report.failures[0].failure_type, FailureType.MISSING_FAKE_KERNEL
             )
+            self.assertEqual(len(report.failures[0].data["op_profiles"]), 1)
 
-            inp = (torch.randn(3, 3), torch.randn(3, 3))
+            inp = (
+                torch.randn(3, 4),
+                torch.randn(3, 4),
+                torch.randn(4, 5),
+                torch.randn(4, 5),
+            )
             self.assertEqual(ep.module()(*inp), M()(*inp))
+
+    def test_missing_meta_kernel_custom_op_multiple_profiles(self):
+        with torch.library._scoped_library("mylib", "FRAGMENT") as lib:
+
+            @torch.library.custom_op("mylib::foo3", mutates_args={})
+            def foo3_impl(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+                return a + b
+
+            class M(torch.nn.Module):
+                def forward(self, a, b, c, d):
+                    res1 = torch.ops.mylib.foo3(a, b)
+                    res2 = torch.ops.mylib.foo3(c, d)
+                    return res1, res2
+
+            inp = (
+                torch.ones(3, 4),
+                torch.ones(3, 4),
+                torch.ones(2, 3, 4),
+                torch.ones(2, 3, 4),
+            )
+
+            ep, report = draft_export(M(), inp)
+
+            self.assertEqual(len(report.failures), 1)
+            self.assertEqual(
+                report.failures[0].failure_type, FailureType.MISSING_FAKE_KERNEL
+            )
+            self.assertEqual(len(report.failures[0].data["op_profiles"]), 2)
 
     def test_missing_meta_kernel_impl(self):
         with torch.library._scoped_library("mylib", "FRAGMENT") as lib:
