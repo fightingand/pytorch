@@ -34,6 +34,7 @@ from typing import (
     TypeVar as _TypeVar,
     Union as _Union,
 )
+
 from typing_extensions import ParamSpec as _ParamSpec
 
 
@@ -71,9 +72,8 @@ if _running_with_deploy():
         _TypeIs = typing_extensions.TypeGuard
         typing_extensions.TypeIs = _TypeIs
 else:
-    from typing_extensions import TypeIs as _TypeIs
-
     from torch.torch_version import __version__ as __version__
+    from typing_extensions import TypeIs as _TypeIs
 
 __all__ = [
     "BoolStorage",
@@ -2515,7 +2515,9 @@ def compile(
         nopython=fullgraph,
         dynamic=dynamic,
         disable=disable,
-    )(model)  # type: ignore[return-value]
+    )(
+        model
+    )  # type: ignore[return-value]
 
 
 def _register_device_module(device_type, module):
@@ -2744,3 +2746,15 @@ def _as_tensor_fullprec(t):
         return torch.as_tensor(t, dtype=torch.int64)
     else:
         return torch.as_tensor(t)
+
+
+# TODO(soulitzer): improve the naming of this
+# - document why we need this wrapper.
+def _get_njt_cache_from_offsets(offsets):
+    from torch._subclasses.fake_tensor import FakeTensor
+
+    # assert not isinstance(offsets, FakeTensor)
+
+    from torch.nested._internal.metadata_cache import try_get_cache
+
+    return try_get_cache(offsets)

@@ -253,8 +253,8 @@ def lookup_jagged(func, *args, **kwargs) -> Optional[Callable]:
 
 def extract_kwargs(arg):
     kwargs = {
-        "offsets": arg.offsets(),
-        "_metadata_cache": arg._metadata_cache,
+        "host_meta": arg._host_meta,
+        "device_meta": arg._device_meta,
         "_ragged_idx": arg._ragged_idx,
     }
     return kwargs
@@ -600,6 +600,7 @@ def to_copy_default(func, *args, **kwargs):
         src = mb_unwrap_functional_tensor(ragged_source)
         tgt.nested_int_memo = src.nested_int_memo
     else:
+        # This is an interesitng one that we need to address.
         _tensor_symint_registry[new_thing] = _tensor_symint_registry[ragged_source]
     inp_kwargs = extract_kwargs(inp)
     inp_kwargs["offsets"] = new_offsets
@@ -2011,9 +2012,10 @@ def to_padded_tensor_default(func, *args, **kwargs):
 
 @register_jagged_func(
     torch.ops.aten._nested_from_padded_tensor.default,
-    "padded: t, offsets: t, dummy: jt, ragged_idx: any?, min_seqlen: any?, max_seqlen: any?, sum_S: any?",
+    "padded: t, offsets: t, dummy: jt, dummy_entry: t, ragged_idx: any?, min_seqlen: any?, max_seqlen: any?, sum_S: any?",
 )
 def _nested_from_padded_tensor_default(func, *args, **kwargs):
+    print("_nested_from_padded_tensor_default")
     _, new_kwargs = normalize_function(  # type: ignore[misc]
         func, args=args, kwargs=kwargs, normalize_to_only_use_kwargs=True
     )
@@ -2049,52 +2051,58 @@ def _nested_from_padded_tensor_default(func, *args, **kwargs):
     elif len(padded_shape) < 3:
         values = values.squeeze(-1)
 
-    ragged_idx = new_kwargs["ragged_idx"]
-    min_seqlen = new_kwargs["min_seqlen"]
-    max_seqlen = new_kwargs["max_seqlen"]
-    metadata_cache = {}
-    if min_seqlen is not None:
-        metadata_cache["min_seqlen"] = min_seqlen
-    if max_seqlen is not None:
-        metadata_cache["max_seqlen"] = max_seqlen
+    device_meta, host_meta = {}, {}
+    # Share this version of the keys somewhere?
+    for key in ("min_seqlen", "max_seqlen", "offsets", "dummy_entry"):
+        if key in new_kwargs and new_kwargs[key] is not None:
+            meta = host_meta if new_kwargs[key].is_cpu else device_meta
+            # TODO(soulitzer): unify the naming of min_seqlen_tensor and min_seqlen
+            # Avoid changing for now to avoid changing native_functions.yaml
+            new_key = f"{key}_tensor" if key in ("min_seqlen", "max_seqlen") else key
+            meta[new_key] = new_kwargs[key]
+            if key == "offsets":
+                print(id(new_kwargs[key]))
 
     return NestedTensor(
         values,
-        offsets,
-        _ragged_idx=ragged_idx,
-        _metadata_cache=metadata_cache,
+        device_meta=device_meta,
+        host_meta=host_meta,
+        _ragged_idx=new_kwargs["ragged_idx"],
     )
 
 
 @register_jagged_func(
     torch.ops.aten._nested_view_from_jagged.default,
-    "values: t, offsets: t, dummy: jt_all, lengths: t?, ragged_idx: any?, min_seqlen: t?, max_seqlen: t?",
+    "values: t, offsets: t, dummy: jt_all, dummy_entry: t, lengths: t?, ragged_idx: any?, min_seqlen: t?, max_seqlen: t?"
 )
 def _nested_view_from_jagged_default(func, *args, **kwargs):
     _, new_kwargs = normalize_function(  # type: ignore[misc]
         func, args=args, kwargs=kwargs, normalize_to_only_use_kwargs=True
     )
+    device_meta, host_meta = {}, {}
+    # Share this version of the keys somewhere?
+    dummy_seen = False
+    for key in ("min_seqlen", "max_seqlen", "lengths", "offsets", "dummy_entry"):
+        if key in new_kwargs and new_kwargs[key] is not None:
+            meta = host_meta if new_kwargs[key].is_cpu else device_meta
+            # TODO(soulitzer): unify the naming of min_seqlen_tensor and min_seqlen
+            # Avoid changing for now to avoid changing native_functions.yaml
+            new_key = f"{key}_tensor" if key in ("min_seqlen", "max_seqlen") else key
+            meta[new_key] = new_kwargs[key]
+            if key == "dummy_entry":
+                dummy_seen = True
+                print("_nested_view_from_jagged_default - we have the dummy: ", meta["dummy_entry"])
+                assert meta["dummy_entry"].device.type == "cpu"
 
-    values, offsets, lengths = (
-        new_kwargs["input"],
-        new_kwargs["offsets"],
-        new_kwargs["lengths"],
-    )
-    ragged_idx = new_kwargs["ragged_idx"]
-    min_seqlen = new_kwargs["min_seqlen"]
-    max_seqlen = new_kwargs["max_seqlen"]
-    metadata_cache = {}
-    if min_seqlen is not None:
-        metadata_cache["min_seqlen"] = min_seqlen
-    if max_seqlen is not None:
-        metadata_cache["max_seqlen"] = max_seqlen
+
+    assert dummy_seen
+
 
     return NestedTensor(
-        values,
-        offsets,
-        lengths=lengths,
-        _ragged_idx=ragged_idx,
-        _metadata_cache=metadata_cache,
+        values=new_kwargs["input"],
+        device_meta=device_meta,
+        host_meta=host_meta,
+        _ragged_idx=new_kwargs["ragged_idx"],
     )
 
 
@@ -2135,7 +2143,7 @@ def _nested_get_min_seqlen(func, *args, **kwargs):
     )
 
     inp = new_kwargs.pop("input")
-    return inp._metadata_cache.get("min_seqlen", None)
+    return inp._min_seqlen_tensor
 
 
 @register_jagged_func(torch.ops.aten._nested_get_max_seqlen.default, "self: jt_all")
@@ -2145,7 +2153,16 @@ def _nested_get_max_seqlen(func, *args, **kwargs):
     )
 
     inp = new_kwargs.pop("input")
-    return inp._metadata_cache.get("max_seqlen", None)
+    return inp._max_seqlen_tensor
+
+
+@register_jagged_func(torch.ops.aten._nested_get_jagged_dummy_entry.default, "self: jt_all")
+def _nested_get_dummy_entry(func, *args, **kwargs):
+    _, new_kwargs = normalize_function(  # type: ignore[misc]
+        func, args=args, kwargs=kwargs, normalize_to_only_use_kwargs=True
+    )
+    inp = new_kwargs.pop("any")
+    return inp._host_dummy_entry
 
 
 # If a section of the Nested Tensor is fully masked out we still retain the section with a length of 0
@@ -2167,7 +2184,8 @@ def masked_select_default(func, *args, **kwargs):
     mask_cumsum = F.pad(mask.values().cumsum(dim=0), (1, 0))  # type: ignore[arg-type]
 
     args = extract_kwargs(inp)
-    args["offsets"] = mask_cumsum[inp._offsets]
+    meta = args["_host_meta"] if inp._values.is_cpu else args["_device_meta"]
+    meta["offsets"] = mask_cumsum[inp._offsets]
     return NestedTensor(
         values=res_values,
         **args,

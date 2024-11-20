@@ -32,7 +32,6 @@ from typing import (
     TypeVar,
     Union,
 )
-from typing_extensions import Self, TypeGuard
 from weakref import ReferenceType
 
 import torch
@@ -64,6 +63,7 @@ from torch.utils._python_dispatch import (
 from torch.utils._pytree import PyTree, tree_map, tree_map_, TreeSpec
 from torch.utils._stats import count
 from torch.utils._traceback import CapturedTraceback
+from typing_extensions import Self, TypeGuard
 
 from ._fake_tensor_utils import _CacheKeyState, _PySymInputStub, _SymIntOutputStub
 
@@ -350,14 +350,16 @@ class FakeTensorConverter:
         maybe_memo = self._get_memo(t)
         if maybe_memo is not None:
             return maybe_memo
-        existing_device = t.device
         # not yet supported in metatensors
         if t.is_quantized:
             raise UnsupportedFakeTensorException("quantized nyi in meta tensors")
         if type(t) is torch.nn.Parameter:
             assert not make_constant
 
-        def mk_fake_tensor(make_meta_t: Callable[[], object]) -> FakeTensor:
+        # This callback is used by both subclass and inner tensors, allow the 
+        # to parameterize on the device in case the subclass and inner tensors
+        # have different devices.
+        def mk_fake_tensor(make_meta_t: Callable[[], object], device) -> FakeTensor:
             # NB: don't use in_kernel_invocation_manager. to
             # ensure FakeTensor can internally do constant computation
             # as necessary.  Invocation manager is "more correct" as
@@ -369,7 +371,7 @@ class FakeTensorConverter:
                 return FakeTensor(
                     fake_mode,
                     make_meta_t(),
-                    existing_device,
+                    device,
                     # TODO: callback might be used in recursive contexts, in
                     # which case using t is wrong!  BUG!
                     constant=t if make_constant else None,
@@ -619,11 +621,6 @@ class FakeTensor(Tensor):
     item_memo = SymNumberMemoDescriptor()
     unique_memo = SymNumberMemoDescriptor()
 
-    # We expect nested_int_memo to be None when an offsets is a graph
-    # intermediate, or an input that has never been associated with a
-    # nested int.
-    nested_int_memo = SymNumberMemoDescriptor(is_nested_int=True)
-
     # Indicates to our torch_dispatch dispatching infra that
     # this is an "infra" mode with lower dispatching precedence.
     _mode_key = torch._C._TorchDispatchModeKey.FAKE
@@ -724,6 +721,16 @@ class FakeTensor(Tensor):
 
         if FakeTensorConfig.debug:
             self._debug_trace = CapturedTraceback.extract()  # type: ignore[attr-defined]
+
+        import traceback
+
+        self._db_trace = traceback.extract_stack()
+
+
+        import traceback
+
+        trace = traceback.extract_stack()
+        self.creation_trace = "".join(traceback.format_list(trace))
         return self
 
     # In some circumstances, a conventional Tensor constructor
@@ -891,18 +898,6 @@ class FakeTensor(Tensor):
 
         return common_device, has_scalar_only_inputs
 
-    def get_nested_int(
-        self,
-        *,
-        coeff: Union[int, torch.SymInt] = 1,
-    ) -> torch.SymInt:
-        if self.nested_int_memo is None:
-            self.nested_int_memo = self.fake_mode.create_symbolic_nested_int(
-                nt_tensor_id=None
-            )
-        assert isinstance(self.nested_int_memo, torch.SymInt)
-        return self.nested_int_memo * coeff
-
     # Similar to FunctionalTensor.tolist
     def tolist(self) -> Any:
         if self.dim() == 0:
@@ -911,6 +906,11 @@ class FakeTensor(Tensor):
             return [elem.item() for elem in self]
         else:
             return [elem.tolist() for elem in self]
+
+    def detach(self) -> torch.Tensor:  # type: ignore[override]
+        out = torch.ops.aten.detach.default(self)
+        self.fake_mode.nested_cache_state.register_detached_tensor(out, self)
+        return out
 
 
 _MetadataIntLike = Union[IntLikeType, "_PySymInputStub", "_SymIntOutputStub"]
@@ -1104,7 +1104,7 @@ class FakeTensorMode(TorchDispatchMode):
     shape_env: Optional[ShapeEnv]
     _stack: Optional[str]
     allow_meta: bool
-
+    # TODO(soulitzer): update this
     # NestedTensor uses a tensor_id_counter to uniquely identify offsets.
     # This counter is incremented when an offsets is used to create an NJT
     # for the first time. To avoid mutating eager state if we construct NJT
@@ -1112,8 +1112,10 @@ class FakeTensorMode(TorchDispatchMode):
     # The initial count is set to the current eager tensor_id_counter value
     # upon initialization, and every time you retrace using the same fake tensor
     # mode, you should reset the counter to the initial count.
-    nt_tensor_id_counter: int = -1
-    nt_tensor_id_initial_count: int = -1
+    # keeps the cache alive for the duration of the mode
+    cache_id_to_symint = {}
+    nested_cache_state = None
+
 
     def __init__(
         self,
@@ -1196,6 +1198,8 @@ class FakeTensorMode(TorchDispatchMode):
 
         self.shape_env = shape_env
 
+        import traceback
+
         self._stack_trace = traceback.extract_stack()
         self._stack = None
 
@@ -1204,14 +1208,22 @@ class FakeTensorMode(TorchDispatchMode):
         self._mode_key = torch._C._TorchDispatchModeKey.FAKE
 
         import torch.nested._internal.nested_tensor
-
-        self.nt_tensor_id_initial_count = (
-            torch.nested._internal.nested_tensor._tensor_id_counter
+        from torch.nested._internal.metadata_cache import (
+            _global_cache_state,
+            TracingCacheState,
         )
-        self.nt_tensor_id_counter = self.nt_tensor_id_initial_count
 
-    def reset_nt_tensor_id_counter(self) -> None:
-        self.nt_tensor_id_counter = self.nt_tensor_id_initial_count
+        self.nested_cache_initial_state = TracingCacheState.init_from_eager(
+            _global_cache_state
+        )
+        self.nested_cache_state = self.nested_cache_initial_state.copy()
+        self.cache_id_to_symint = {}
+
+    def reset_nested_cache_state(self) -> None:
+        # TODO(soulitzer): write down what's supposed to happen here.
+        self.nested_cache_state.set_next_id(
+            self.nested_cache_initial_state.get_next_id()
+        )
 
     # Typically, there is only one fake tensor mode and you test for it by
     # doing an isinstance test.  However, in some situations, there might be
@@ -2330,22 +2342,15 @@ class FakeTensorMode(TorchDispatchMode):
 
         return tree_map(wrap, r)
 
-    def create_symbolic_nested_int(
-        self, *, nt_tensor_id: Optional[int] = None
-    ) -> torch.SymInt:
-        # See Note: [Creating symbolic nested int]
-        # Returned nested int always has coeff=1; multiply the result by coeff if needed
+    def create_nested_symint(self, cache) -> torch.SymInt:
         import torch.nested._internal.nested_tensor
+        from torch.nested._internal.nested_int import NestedIntNode
 
-        if nt_tensor_id is None:
-            nt_tensor_id = self.nt_tensor_id_counter
-            assert self.enter_stack, "should only called while FakeTensorMode is active"
-            self.nt_tensor_id_counter += 1
-        hint = torch._C._get_nested_int(nt_tensor_id, 1)
+        hint = SymInt(NestedIntNode(cache=cache, coeff=1))
 
         src = torch._dynamo.source.EphemeralSource("intermediate_offsets_or_lengths")
         assert self.shape_env is not None
-        ret = self.shape_env.create_symintnode(
+        nested_symint = self.shape_env.create_symintnode(
             sym=self.shape_env.create_symbol(
                 val=hint,
                 source=src,
@@ -2353,7 +2358,15 @@ class FakeTensorMode(TorchDispatchMode):
             hint=hint,
             source=src,
         )
-        return ret
+        self.cache_id_to_symint[cache.id] = nested_symint
+
+    def get_nested_symint(self, cache, *, coeff=1) -> torch.SymInt:
+        # Assume that the cache exists and is registered.
+        # See Note: [Creating symbolic nested int]
+        # Maybe we creating too many caches?
+        if cache.id not in self.cache_id_to_symint:
+            self.create_nested_symint(cache)
+        return self.cache_id_to_symint[cache.id] * coeff
 
     _cpp_meta_supports_symint = ordered_set(
         aten.empty.memory_format,

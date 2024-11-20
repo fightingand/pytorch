@@ -200,7 +200,7 @@ def run_functionalized_fw_and_collect_metadata(
             # Also, prevent memoization from applying.
             if fake_mode:
                 fake_mode.epoch += 1
-                fake_mode.reset_nt_tensor_id_counter()
+                fake_mode.reset_nested_cache_state()
 
         if prior_autocast_states != _get_autocast_states():
             raise RuntimeError(
@@ -579,9 +579,9 @@ from a multi-output view call"
                             output_type = (
                                 OutputType.alias_of_intermediate_save_as_output
                             )
-                            intermediate_base_tensor_id_to_output_idx[
-                                id(o._base)
-                            ] = new_out_idx
+                            intermediate_base_tensor_id_to_output_idx[id(o._base)] = (
+                                new_out_idx
+                            )
                             intermediate_bases.append(o._base)
             elif (
                 # See https://github.com/pytorch/pytorch/issues/100348 for this case.
@@ -665,7 +665,7 @@ from a multi-output view call"
                     t, lambda _, inner_t: view_avoid_dupes_with_primals(inner_t)
                 )
             if isinstance(t, Tensor):
-                return t.view(t.shape)
+                return t.detach()
             return t
 
         # This analysis function returns *only* the outputs that are meant to be tangents to the backwards.
@@ -693,6 +693,7 @@ from a multi-output view call"
         # intermediate bases are also included in the backward graph
         f_tangents = f_input_tangents + f_output_tangents + intermediate_bases
         traced_tangents = pytree.tree_map(from_fun, f_tangents)
+
         traced_tangents = pytree.tree_map(
             view_avoid_dupes_with_primals, traced_tangents
         )

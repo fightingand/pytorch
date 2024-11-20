@@ -3711,9 +3711,8 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
             )
             self.assertEqual(nt_rest_of_shape, nt_loaded_rest_of_shape)
             # ensure metadata cache is carried through serialization
-            self.assertEqual(nt._metadata_cache, nt_loaded._metadata_cache)
-            # ensure lengths are carried through if present
-            self.assertEqual(nt._lengths, nt_loaded._lengths)
+            self.assertEqual(nt._host_meta, nt_loaded._host_meta)
+            self.assertEqual(nt._device_meta, nt_loaded._host_meta)
 
     def test_tensor_attributes(self, device):
         a = torch.randn(2, 3, requires_grad=True, dtype=torch.float64, device=device)
@@ -5263,19 +5262,20 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
 
             if base is not None:
                 self.assertTrue(nt._is_view() and nt._base is base)
-                replay_cache = nt._view_func(torch.randn_like(nt._base))._metadata_cache
+                replay = nt._view_func(torch.randn_like(nt._base))
+
                 self.assertEqual(
-                    "min_seqlen" in replay_cache, cached_min_seqlen is not None
+                    replay._min_seqlen_tensor is not None, cached_min_seqlen is not None
                 )
                 self.assertEqual(
-                    "max_seqlen" in replay_cache, cached_max_seqlen is not None
+                    replay._max_seqlen_tensor is not None, cached_max_seqlen is not None
                 )
 
             self.assertEqual(
-                "min_seqlen" in nt._metadata_cache, cached_min_seqlen is not None
+                nt._min_seqlen_tensor is not None, cached_min_seqlen is not None
             )
             self.assertEqual(
-                "max_seqlen" in nt._metadata_cache, cached_max_seqlen is not None
+                nt._max_seqlen_tensor is not None, cached_max_seqlen is not None
             )
 
             if cached_min_seqlen is not None:
@@ -5765,12 +5765,22 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
             self.assertEqual(t, tensor_list[i])
 
     def test_unbind_lengths_ragged_idx_1(self, device):
+        from torch.nested._internal.nested_tensor import (
+            NestedTensor,
+            get_device_and_host_metadata,
+        )
         values = torch.randn(16, 8, 128, device=device)
         offsets = torch.tensor([0, 8, 12, 13, 16], device=device)
         lengths = torch.tensor([6, 2, 1, 2], device=device)
         ragged_idx = 1
-        nt = torch.nested._internal.nested_tensor.NestedTensor(
-            values, offsets=offsets, lengths=lengths, _ragged_idx=ragged_idx
+
+        device_meta, host_meta = get_device_and_host_metadata(
+            offsets=offsets,
+            lengths=lengths,
+            dummy_entry=torch.empty((0,), device="cpu")
+        )
+        nt = NestedTensor(
+            values, device_meta=device_meta, host_meta=host_meta, _ragged_idx=ragged_idx
         )  # 4D nested tensor
 
         tensor_list = []
@@ -5784,12 +5794,23 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
             self.assertEqual(t, tensor_list[i])
 
     def test_unbind_lengths_ragged_idx_equals_2_bad_dim(self, device):
+        from torch.nested._internal.nested_tensor import (
+            NestedTensor,
+            get_device_and_host_metadata,
+        )
+
         values = torch.randn(16, 8, 128, device=device)
         offsets = torch.tensor([0, 8, 12, 13, 16], device=device)
         lengths = torch.tensor([6, 2, 1, 2], device=device)
         ragged_idx = 2
-        nt = torch.nested._internal.nested_tensor.NestedTensor(
-            values, offsets=offsets, lengths=lengths, _ragged_idx=ragged_idx
+
+        device_meta, host_meta = get_device_and_host_metadata(
+            offsets=offsets,
+            lengths=lengths,
+            dummy_entry=torch.empty((0,), device="cpu")
+        )
+        nt = NestedTensor(
+            values, device_meta=device_meta, host_meta=host_meta, _ragged_idx=ragged_idx
         )  # 4D nested tensor
 
         self.assertRaisesRegex(
@@ -5799,12 +5820,22 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
         )
 
     def test_unbind_lengths_ragged_idx_2(self, device):
+        from torch.nested._internal.nested_tensor import (
+            NestedTensor,
+            get_device_and_host_metadata,
+        )
+
         values = torch.randn(16, 8, 128, device=device)
         offsets = torch.tensor([0, 2, 4, 8], device=device)
         lengths = torch.tensor([2, 1, 3], device=device)
         ragged_idx = 2
-        nt = torch.nested._internal.nested_tensor.NestedTensor(
-            values, offsets=offsets, lengths=lengths, _ragged_idx=ragged_idx
+        device_meta, host_meta = get_device_and_host_metadata(
+            offsets=offsets,
+            lengths=lengths,
+            dummy_entry=torch.empty((0,), device="cpu")
+        )
+        nt = NestedTensor(
+            values, device_meta=device_meta, host_meta=host_meta, _ragged_idx=ragged_idx
         )  # 4D nested tensor
 
         tensor_list = []
@@ -5818,12 +5849,22 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
             self.assertEqual(t, tensor_list[i])
 
     def test_unbind_lengths_ragged_idx_3(self, device):
+        from torch.nested._internal.nested_tensor import (
+            NestedTensor,
+            get_device_and_host_metadata,
+        )
+
         values = torch.randn(16, 8, 128, device=device)
         offsets = torch.tensor([0, 100, 128], device=device)
         lengths = torch.tensor([50, 28], device=device)
         ragged_idx = 3
-        nt = torch.nested._internal.nested_tensor.NestedTensor(
-            values, offsets=offsets, lengths=lengths, _ragged_idx=ragged_idx
+        device_meta, host_meta = get_device_and_host_metadata(
+            offsets=offsets,
+            lengths=lengths,
+            dummy_entry=torch.empty((0,), device="cpu")
+        )
+        nt = NestedTensor(
+            values, device_meta=device_meta, host_meta=host_meta, _ragged_idx=ragged_idx
         )  # 4D nested tensor
 
         tensor_list = []
@@ -5840,12 +5881,22 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
         "TorchDynamo raises an error for ragged_idx == 0 earlier than Torch"
     )
     def test_unbind_lengths_ragged_idx_0(self, device):
+        from torch.nested._internal.nested_tensor import (
+            NestedTensor,
+            get_device_and_host_metadata,
+        )
+
         values = torch.randn(16, 8, 128, device=device)
         offsets = torch.tensor([0, 100, 128], device=device)
         lengths = torch.tensor([50, 28], device=device)
         ragged_idx = 0
-        nt = torch.nested._internal.nested_tensor.NestedTensor(
-            values, offsets=offsets, lengths=lengths, _ragged_idx=ragged_idx
+        device_meta, host_meta = get_device_and_host_metadata(
+            offsets=offsets,
+            lengths=lengths,
+            dummy_entry=torch.empty((0,), device="cpu")
+        )
+        nt = NestedTensor(
+            values, device_meta=device_meta, host_meta=host_meta, _ragged_idx=ragged_idx
         )  # 4D nested tensor
 
         tensor_list = []
@@ -7313,7 +7364,8 @@ torch.cuda.synchronize()
         )
 
         # expect min / max seqlen to be stored here
-        cache = dict(nt._metadata_cache)
+        device_meta = dict(nt._device_meta)
+        host_meta = dict(nt._host_meta)
 
         @torch.compile
         def f(nt):
@@ -7323,7 +7375,8 @@ torch.cuda.synchronize()
 
         output = f(nt)
         output.backward(torch.ones_like(output))
-        self.assertEqual(output._metadata_cache, cache)
+        self.assertEqual(output._device_meta, device_meta)
+        self.assertEqual(output._host_meta, host_meta)
 
     @dtypes(torch.float32)
     @skipIfTorchDynamo("Test compiles internally")
@@ -7500,7 +7553,7 @@ torch.cuda.synchronize()
 
         # convert padded dense -> NJT
         from torch.nested._internal.nested_tensor import nested_from_padded
-
+        print(id(nt.offsets()))
         nt2 = nested_from_padded(padded, nt.offsets())
         self.assertEqual(nt, nt2)
 
@@ -7630,7 +7683,8 @@ torch.cuda.synchronize()
         )
 
         # expect min / max seqlen to be stored here
-        cache = dict(nt._metadata_cache)
+        device_meta = dict(nt._device_meta)
+        host_meta = dict(nt._host_meta)
 
         @torch.compile
         def g(nt):
@@ -7649,7 +7703,8 @@ torch.cuda.synchronize()
 
         output = g(nt)
         output.backward(torch.ones_like(output))
-        self.assertEqual(output._metadata_cache, cache)
+        self.assertEqual(output._device_meta, device_meta)
+        self.assertEqual(output._host_meta, host_meta)
 
     # See https://github.com/pytorch/pytorch/issues/128649
     @xfailIfTorchDynamo

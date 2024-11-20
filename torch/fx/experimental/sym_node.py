@@ -81,6 +81,10 @@ class SymNode:
         self._expr = expr
         self.shape_env = shape_env
         self.pytype = pytype
+        import traceback
+
+        trace = traceback.extract_stack()
+        self.creation_trace = "".join(traceback.format_list(trace))
 
         # What's the difference between hint and constant?
         #
@@ -1535,7 +1539,11 @@ def _make_user_magic(method, user_type):
         other_node = to_node(self.node, other)
         if other_node is NotImplemented:
             return NotImplemented
-        ret = wrap_node(getattr(other_node, method_attr)(self.node))
+        try:
+            ret = wrap_node(getattr(other_node, method_attr)(self.node))
+        except:
+            if method_attr == "mul":
+                ret = wrap_node(getattr(self.node, method_attr)(other_node))
         return get_constant(ret) if is_constant(ret) else ret
 
     if method in unary_magic_methods:

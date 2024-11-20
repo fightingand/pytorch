@@ -1671,6 +1671,22 @@ class VariableBuilder:
                     VariableBuilder(self.tx, inner_source)(inner_value)
                 )
 
+        from torch._dynamo.source import (
+            NestedTensorCacheListSource,
+        )
+        # Update this so that it participates in the aliasing guards
+        nested_cache = torch._get_njt_cache_from_offsets(value)
+        if nested_cache is not None:
+            install_guard(
+                NestedTensorCacheListSource(source).make_guard(GuardBuilder.EQUALS_MATCH)
+            )
+            # TODO(soulitzer): we may need to recurse here
+            # for cache_key, cache_value in njt_cache:
+            #     inner_source = NestedTensorCacheSource(self.source, cache_key)
+            #     LazyVariableTracker.realize_all(
+            #         VariableBuilder(self.tx, inner_source)(cache_value)
+            #     )
+
         self.tx.output.input_source_to_var[source] = tensor_variable
         assert "tensor_dict" not in tensor_proxy.node.meta
         tensor_proxy.node.meta["tensor_dict"] = _extract_tensor_dict(value)
@@ -2683,7 +2699,7 @@ def _automatic_dynamic(
 
 # See note [Tensor Fakification and Symbol Caching]
 def wrap_to_fake_tensor_and_record(
-    e, tx, *, source: Optional[Source], is_tensor: bool, parent_context=None
+    e, tx, *, source: Optional[Source], is_tensor: bool, parent_context=None, recurse_cache=True
 ):
     if (
         type(e) in (torch.Tensor, torch.nn.Parameter, FakeTensor)
@@ -2710,6 +2726,20 @@ def wrap_to_fake_tensor_and_record(
             assert isinstance(source, AttrSource)
             inner_context_name = source.member
             symbolic_context = parent_context.inner_contexts[inner_context_name]
+
+        from torch._dynamo.source import NestedTensorCacheAttrSource
+
+        nested_cache = torch._get_njt_cache_from_offsets(e)
+        if nested_cache is not None and recurse_cache:
+            for k, v in nested_cache.data.items():
+                inner_source = NestedTensorCacheAttrSource(source, k)
+                wrap_to_fake_tensor_and_record(
+                    v,
+                    tx,
+                    source=inner_source,
+                    is_tensor=True,
+                    recurse_cache=False,
+                )
 
         log.debug(
             "wrap_to_fake %s %s %s %s",

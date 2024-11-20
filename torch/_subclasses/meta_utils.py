@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
 import warnings
 import weakref
 from dataclasses import dataclass
@@ -19,7 +20,6 @@ from typing import (
     TYPE_CHECKING,
     Union,
 )
-from typing_extensions import TypeAlias, TypeGuard
 
 import torch
 from torch._C._autograd import CreationMeta
@@ -40,6 +40,7 @@ from torch._logging import trace_structured
 from torch.utils._mode_utils import no_dispatch
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 from torch.utils.weak import WeakIdKeyDictionary
+from typing_extensions import TypeAlias, TypeGuard
 
 
 if TYPE_CHECKING:
@@ -192,6 +193,37 @@ class MetaTensorDescriber:
             self.next_storage_id += 1
         return self.lookup_storage[s]
 
+    def describe_custom_size_strides(self, t: torch.Tensor):
+        def process(x):
+            from torch.nested._internal.nested_int import NestedIntNode
+
+            if isinstance(x, torch.SymInt):
+                # assert isinstance(x.node, NestedIntNode)
+                if isinstance(x.node, NestedIntNode):
+                    return MetaNestedIntDesc(
+                        cache=self.describe_nested_cache(x.node.nested_int_cache()),
+                    )
+            return None
+
+        return MetaCustomSizeStridesDesc(
+            size=tuple(process(x) for x in t.size()),
+            stride=tuple(process(x) for x in t.stride()),
+        )
+
+    def describe_nested_cache(self, nested_cache):
+        def process(attr_name, x):
+            if x is None:
+                return None
+            return self.describe_tensor(x, recurse=False, nested_cache_attr=attr_name)
+
+        return MetaNestedCacheDesc(
+            keys=tuple(nested_cache.data.keys()),
+            values=tuple(
+                process(attr_name, x) for attr_name, x in nested_cache.data.items()
+            ),
+            cache_id=nested_cache.id,
+        )
+
     def describe_storage(self, s: torch.UntypedStorage, *, trace: bool = False):
         r = MetaStorageDesc(
             id=self.get_storage_id(s),
@@ -209,7 +241,12 @@ class MetaTensorDescriber:
         return r
 
     def describe_tensor(
-        self, t: torch.Tensor, *, recurse: bool = True, trace: bool = False
+        self,
+        t: torch.Tensor,
+        *,
+        recurse: bool = True,
+        trace: bool = False,
+        nested_cache_attr: str = None,
     ):
         is_leaf = safe_is_leaf(t)
         is_view = t._is_view()
@@ -305,7 +342,22 @@ class MetaTensorDescriber:
             }
             type_v = type(t)
 
-        from torch.nested._internal.nested_tensor import _tensor_symint_registry
+        # From functional
+        from torch.nested._internal.metadata_cache import get_global_cache_state
+
+        nested_cache_desc = None
+        # Do I still need to recurse through here? It shouldn't hurt
+        # but might be redundant - check why subclasses need to recurse through both dynamo and here.
+        nested_cache_state = get_global_cache_state()
+        nested_cache_id = nested_cache_state._tensor_to_cache_id.get(t)
+
+        if nested_cache_id is not None:
+            # Recursively fakify the canonical cache
+            nested_cache = nested_cache_state.try_get_cache(t)
+            if nested_cache is not None and recurse:
+                # Reusing this existing recurse arg may be problematic, e.g.
+                # I won't recurse to the base for views of the cache entries.
+                nested_cache_desc = self.describe_nested_cache(nested_cache)
 
         # TODO: Is it important to enable torch.inference_mode before querying
         # these values?
@@ -335,11 +387,11 @@ class MetaTensorDescriber:
             is_parameter=isinstance(t, torch.nn.Parameter),
             is_traceable_wrapper_subclass=is_traceable_wrapper_subclass_v,
             is_nested=is_nested,
-            nested_int=(
-                _tensor_symint_registry[t].node.nested_int()
-                if t in _tensor_symint_registry
-                else None
-            ),
+            nested_cache_id=nested_cache_id,
+            nested_cache=nested_cache_desc,
+            nested_cache_attr=nested_cache_attr,
+            # We may be able to remove nested_int in favor of this.
+            custom_size_strides=self.describe_custom_size_strides(t),
             is_functional=is_functional,
             layout=layout,
             device=t.device,
@@ -423,6 +475,25 @@ class MetaTensorDescriber:
 
 
 @dataclass(frozen=True)
+class MetaNestedIntDesc:
+    cache: MetaNestedCacheDesc
+
+
+@dataclass(frozen=True)
+class MetaCustomSizeStridesDesc:
+    size: Tuple[Optional[MetaNestedIntDesc], ...]
+    stride: Tuple[Optional[MetaNestedIntDesc], ...]
+    # storage_offset can never be NestedInt
+
+
+@dataclass(frozen=True)
+class MetaNestedCacheDesc:
+    keys: Tuple[Optional[str], ...]
+    values: Tuple[Optional[MetaTensorDesc], ...]
+    cache_id: int
+
+
+@dataclass(frozen=True)
 class MetaStorageDesc:
     id: MetaStorageId
     size: int
@@ -475,7 +546,12 @@ class MetaTensorDesc:
     # We eagerly symbolicize the associated nested int for e.g. offsets / lengths
     # metadata if that offsets is already associated with a nested int.
     # See test_construct_from_jagged_with_input_offsets_mixed_case.
-    nested_int: Optional[int] = None
+    nested_cache: Optional[MetaNestedCacheDesc] = None
+    # MetaTensorDesc may only have nested_cache_id and not nested_cache in the case
+    # where we have multiple keys in a cache.
+    nested_cache_id: Optional[int] = None
+    nested_cache_attr: str = None
+    custom_size_strides: MetaCustomSizeStridesDesc = None
     is_traceable_wrapper_subclass: bool = False
     is_functional: bool = False
     is_conj: bool = False
@@ -688,10 +764,11 @@ class MetaConverter:
         self,
         t: MetaTensorDesc,
         shape_env: Optional[ShapeEnv] = None,
-        callback=lambda t: t(),
+        callback_=lambda t: t(),
         source: Optional[Source] = None,
         symbolic_context: Optional[SymbolicContext] = None,
     ):
+        callback = functools.partial(callback_, device=t.device)
         if source is None:
             from torch._dynamo.source import ConstantSource
 
@@ -734,9 +811,39 @@ class MetaConverter:
         # This is too aggressive: we do duck sizing and 0/1 simplification
         # as we allocate variables, and we do need to register guards for
         # these cases.
-        maybe_suppress: Callable[[], Any] = contextlib.nullcontext
+
+        # Capture everything needed to recursively call meta_tensor where we need it
+        def metafy_fn(t: MetaTensorDesc, src) -> torch.Tensor:
+            inner_callback = functools.partial(callback_, device=t.device)
+
+            context = all_dynamic_symbolic_context(t, src, shape_env, callback)
+
+            # TODO(soulitzer): improve this check
+            if t.nested_cache_attr is not None and hasattr(
+                symbolic_context, "inner_contexts"
+            ):
+                key = (
+                    "_host_" + t.nested_cache_attr
+                    if t.nested_cache_attr != "_values"
+                    else t.nested_cache_attr
+                )
+                context = symbolic_context.inner_contexts[key]
+            
+
+            return self.meta_tensor(
+                t,
+                shape_env,
+                # This metafy fn is wrong because we're using the outer tensor's device!
+                inner_callback,
+                source=src,
+                symbolic_context=context,
+            )
+
         if shape_env is not None:
             maybe_suppress = shape_env.suppress_guards
+        else:
+            # the token doens't work?
+            maybe_suppress = contextlib.nullcontext
 
         def sym_sizes_strides_storage_offset(
             t: MetaTensorDesc, src, symbolic_context=symbolic_context
@@ -768,6 +875,8 @@ class MetaConverter:
                         [d in t.dynamo_dynamic_indices for d in range(t.ndim)],
                         src,
                         symbolic_context=symbolic_context,
+                        metafy_fn=metafy_fn,
+                        custom_size_strides=t.custom_size_strides,
                     )
             else:
                 return (t.size, t.stride, t.storage_offset)
@@ -830,7 +939,7 @@ class MetaConverter:
                     return self.meta_tensor(
                         t,
                         shape_env=shape_env,
-                        callback=callback,
+                        callback_=callback,
                         source=source,
                         symbolic_context=symbolic_context,
                     )
@@ -842,12 +951,14 @@ class MetaConverter:
                         current_context = symbolic_context.inner_contexts[attr]
 
                     current_source = AttrSource(source, attr)
+                    inner_callback = functools.partial(callback_, device=t.device)
+
                     new_empty_tensor = _empty_create_subclass(
                         meta_tensor_desc,
                         meta_tensor_desc.size,
                         meta_tensor_desc.stride,
                         current_context,
-                        callback,
+                        inner_callback,
                         current_source,
                     )
                     inner_tensors[attr] = new_empty_tensor
@@ -1260,7 +1371,7 @@ class MetaConverter:
                             ft = self.meta_tensor(
                                 t.unwrapped,
                                 shape_env=shape_env,
-                                callback=callback,
+                                callback_=callback,
                                 # NB: reuse these exactly, we treat the
                                 # functional tensor as "invisible".
                                 # TODO: Actually this all probably doesn't
@@ -1303,7 +1414,7 @@ class MetaConverter:
                     unwrapped = self.meta_tensor(
                         t.unwrapped,
                         shape_env=shape_env,
-                        callback=callback,
+                        callback_=callback,
                         source=source,
                         symbolic_context=symbolic_context,
                     )
@@ -1575,13 +1686,46 @@ class MetaConverter:
             if t.is_parameter:
                 r._is_param = True
 
-            # See Note: [Creating symbolic nested int]
-            if t.nested_int is not None:
-                r.nested_int_memo = r.fake_mode.create_symbolic_nested_int(
-                    nt_tensor_id=t.nested_int
+            self.set_tensor_memo(t, r)
+
+            nested_cache = None
+
+            if t.nested_cache is not None:
+                from torch._dynamo.source import (
+                    GetItemSource,
+                    NestedTensorCacheAttrSource,
                 )
 
-            self.set_tensor_memo(t, r)
+                cache_data = {}
+                # It's important that we recurse AFTER memoization.
+                for cache_key, cache_value in zip(
+                    t.nested_cache.keys, t.nested_cache.values
+                ):
+                    fake_cache_value = (
+                        metafy_fn(
+                            cache_value,
+                            # Make sure to use the NestedTensorCacheSource directly
+                            src=NestedTensorCacheAttrSource(source, cache_key),
+                        )
+                        if cache_value is not None
+                        else None
+                    )
+                    cache_data[cache_key] = fake_cache_value
+
+                # How do I reuse the existing stuff?
+                # Extract out something?
+                # symbolicize the nested int
+                #
+                # if already registered, do nothing.
+                from torch.nested._internal.metadata_cache import try_get_cache
+
+                if (nested_cache := try_get_cache(cache_data)) is None:
+                    nested_cache = r.fake_mode.nested_cache_state.register_cache(
+                        cache_data, t.nested_cache.cache_id
+                    )
+                # See Note: [Creating symbolic nested int]
+                # this should get the existing one if it already exists.
+                r.fake_mode.get_nested_symint(nested_cache, coeff=1)
 
         return self.get_tensor_memo(t)
 
@@ -1660,7 +1804,7 @@ class MetaConverter:
             r = self.meta_tensor(
                 t_desc,
                 shape_env=shape_env,
-                callback=callback,
+                callback_=callback,
                 source=source,
                 symbolic_context=symbolic_context,
             )
