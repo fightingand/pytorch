@@ -20,7 +20,9 @@ from torch.testing._internal.distributed._tensor.common_dtensor import (
     with_comms,
 )
 
+
 TYPE_DEVICE = "hpu" if TEST_HPU else "cuda"
+
 
 class DistTensorRandomInitTest(DTensorTestBase):
     def _run_init_op(self, init_op, *args, **kwargs):
