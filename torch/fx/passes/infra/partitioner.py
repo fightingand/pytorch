@@ -100,7 +100,6 @@ class CapabilityBasedPartitioner:
         partitions_order: Dict[
             int, int
         ] = {}  # mapping from partition_id to minimum topo order of nodes in partition
-        partition_users: Dict[int, Set] = {}  # mapping from partition_id to partition users
         partition_users: Dict[
             int, Set
         ] = {}  # mapping from partition_id to partition users
