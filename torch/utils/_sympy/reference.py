@@ -307,6 +307,14 @@ class PythonReferenceAnalysis(ReferenceAnalysis):
     def round_decimal(a, b):
         return round(a, ndigits=b)
 
+    @staticmethod
+    def trunc_to_int(x, dtype):
+        return torch.sym_int(x)
+
+    @staticmethod
+    def to_float(x):
+        return torch.sym_float(x)
+
 
 # Like PythonReferenceAnalysis, but some export-unfriendly choices of
 # operators to make things faster
