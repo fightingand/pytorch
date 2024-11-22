@@ -265,32 +265,33 @@ sycl::event scaled_matmul(
   // Validation checks have passed lets resize the output to actual size
   IntArrayRef mat1_sizes = mat1.sizes();
   IntArrayRef mat2_sizes = mat2.sizes();
-
-  dnnl::memory src = at::native::onednn::make_onednn_memory(
-      {mat1.sizes().vec(),
-       at::native::onednn::get_onednn_dtype(mat1),
-       mat1.strides().vec()},
-      engine,
-      mat1.data_ptr());
-  dnnl::memory weight = at::native::onednn::make_onednn_memory(
-      {mat2.sizes().vec(),
-       at::native::onednn::get_onednn_dtype(mat2),
-       mat2.strides().vec()},
-      engine,
-      mat2.data_ptr());
   int64_t K = mat1_sizes[1], M = mat1_sizes[0], N = mat2_sizes[1];
 
   std::vector<int64_t> src_dims = {M, K};
   std::vector<int64_t> weight_dims = {K, N};
   std::vector<int64_t> dst_dims = {M, N};
 
+  dnnl::memory src = at::native::onednn::make_onednn_memory(
+      {src_dims,
+       at::native::onednn::get_onednn_dtype(mat1),
+       mat1.strides().vec()},
+      engine,
+      mat1.data_ptr());
+  auto mat2_c = mat2.contiguous();
+  dnnl::memory weight = at::native::onednn::make_onednn_memory(
+      {weight_dims,
+       at::native::onednn::get_onednn_dtype(mat2_c),
+       mat2_c.strides().vec()},
+      engine,
+      mat2_c.data_ptr());
   dnnl::memory dst = at::native::onednn::make_onednn_memory(
-      {result.sizes().vec(),
+      {dst_dims,
        at::native::onednn::get_onednn_dtype(result),
        result.strides().vec()},
       engine,
       result.data_ptr());
   bool with_bias = bias.has_value();
+  dnnl::memory::desc bias_desc = dnnl::memory::desc();
   dnnl::memory onednn_bias;
   if (with_bias) {
     auto bias_value = bias.value();
@@ -314,13 +315,10 @@ sycl::event scaled_matmul(
           bias_value.data_ptr());
     }
   }
-  dnnl::primitive_attr op_attr = dnnl::primitive_attr();
-  if (scale_a.dim())
-    op_attr.set_scales_mask(DNNL_ARG_SRC, scale_a.numel() == 1 ? 0 : 1 << 1);
-  if (scale_b.dim())
-    op_attr.set_scales_mask(
-        DNNL_ARG_WEIGHTS, scale_b.numel() == 1 ? 0 : 1 << 1);
 
+  dnnl::primitive_attr op_attr = dnnl::primitive_attr();
+  op_attr.set_scales_mask(DNNL_ARG_SRC, scale_a.numel() == 1 ? 0 : 1 << 1);
+  op_attr.set_scales_mask(DNNL_ARG_WEIGHTS, scale_b.numel() == 1 ? 0 : 1 << 1);
   op_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
   // TODO: Remove this try/catch when oneDNN provides API to notify
   // framework whether current platform can run FP8 primitives.
@@ -359,30 +357,27 @@ sycl::event scaled_matmul(
     args.insert({DNNL_ARG_BIAS, onednn_bias});
   }
   // auto sycl_queue = dnnl::sycl_interop::get_queue(stream);
-  if (scale_a.dim()) {
-    dnnl::memory src_scales_t = scale_a.numel() == 1
-        ? at::native::onednn::make_onednn_memory(
-              {{1}, dnnl::memory::data_type::f32, {1}},
-              engine,
-              scale_a.data_ptr())
-        : at::native::onednn::make_onednn_memory(
-              {{scale_a.numel(), 1}, dnnl::memory::data_type::f32, {1}},
-              engine,
-              scale_a.data_ptr());
-    args.insert({DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC, src_scales_t});
-  }
-  if (scale_b.dim()) {
-    dnnl::memory wei_scales_t = scale_b.numel() == 1
-        ? at::native::onednn::make_onednn_memory(
-              {{1}, dnnl::memory::data_type::f32, {1}},
-              engine,
-              scale_b.data_ptr())
-        : at::native::onednn::make_onednn_memory(
-              {{scale_b.numel(), 1}, dnnl::memory::data_type::f32, {1}},
-              engine,
-              scale_b.data_ptr());
-    args.insert({DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS, wei_scales_t});
-  }
+  dnnl::memory src_scales_t = scale_a.numel() == 1
+      ? at::native::onednn::make_onednn_memory(
+            {{1}, dnnl::memory::data_type::f32, {1}},
+            engine,
+            scale_a.data_ptr())
+      : at::native::onednn::make_onednn_memory(
+            {{scale_a.numel(), 1}, dnnl::memory::data_type::f32, {1}},
+            engine,
+            scale_a.data_ptr());
+  args.insert({DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC, src_scales_t});
+  dnnl::memory wei_scales_t = scale_b.numel() == 1
+      ? at::native::onednn::make_onednn_memory(
+            {{1}, dnnl::memory::data_type::f32, {1}},
+            engine,
+            scale_b.data_ptr())
+      : at::native::onednn::make_onednn_memory(
+            {{scale_b.numel(), 1}, dnnl::memory::data_type::f32, {1}},
+            engine,
+            scale_b.data_ptr());
+  args.insert({DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS, wei_scales_t});
+
   auto matmul_forward = dnnl::matmul(primitive_desc);
   sycl::event matmul_fwd_event =
       dnnl::sycl_interop::execute(matmul_forward, stream, args);

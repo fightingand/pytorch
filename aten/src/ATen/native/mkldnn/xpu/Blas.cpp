@@ -487,12 +487,12 @@ Tensor& scaled_mm_out_xpu(
       "Got scale_a.size()=(",
       scale_a.size(0),
       ", ",
-      scale_a.size(1),
+      scale_a.dim() > 1 ? scale_a.size(1) : 1,
       ") and ",
       "scale_b.size()=(",
       scale_b.size(0),
       ", ",
-      scale_b.size(1),
+      scale_b.dim() > 1 ? scale_b.size(1) : 1,
       ")");
   // Check types
   TORCH_CHECK(
