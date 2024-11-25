@@ -308,6 +308,31 @@ class AutogradCompilerInstance:
 
         return []
 
+    def mark_dims_unbacked(self):
+        # avoid zero-one specialization
+        # returns unbacked_inputs: input idx -> dim indices
+        unbacked_inputs = {}
+        inputs_node = next(iter(self.fx_tracer.graph.nodes))
+        for node in self.fx_tracer.graph.find_nodes(
+            op="call_function", target=operator.getitem
+        ):
+            if len(node.args) != 2 or node.args[0] != inputs_node:
+                continue
+            assert isinstance(node.args[1], int)
+            assert "tensor_meta" in node.meta
+            unbacked_sizes = []
+            for i,size in enumerate(node.meta["tensor_meta"].shape):
+                if isinstance(size, torch.SymInt) and size.node.hint < 2:
+                    unbacked_sizes.append(i)
+                else:
+                    assert isinstance(size, int)
+                    if size < 2:
+                        unbacked_sizes.append(i)
+            if unbacked_sizes:
+                unbacked_inputs[node.args[1]] = unbacked_sizes
+
+        return unbacked_inputs
+
     def is_sym_node(self, node):
         return (
             isinstance(node, torch.fx.Node)
@@ -372,6 +397,10 @@ class AutogradCompilerInstance:
         if snapshot_cudagraph_enabled():
             runtime_inputs_to_move = self.move_graph_nodes_to_cuda(self.fx_tracer.graph)
 
+        # TODO(xmfan): land under config?
+        runtime_input_dims_to_mark_unbacked: Dict[int, List[int]] = self.mark_dims_unbacked()
+        print("runtime_input_dims_to_mark_unbacked:", runtime_input_dims_to_mark_unbacked)
+
         graph = GraphModule(
             self.fx_tracer.root, self.fx_tracer.graph, "CompiledAutograd"
         )
@@ -390,12 +419,18 @@ class AutogradCompilerInstance:
             payload_fn=lambda: graph.print_readable(print_output=False),
         )
 
+
         def runtime_wrapper(compiled_fn, inputs, sizes, scalars, hooks):
             global in_compiled_autograd_region
             try:
                 in_compiled_autograd_region = True
                 for i in runtime_inputs_to_move:
                     inputs[i] = inputs[i].pin_memory().cuda(non_blocking=True)
+
+                for i,dims in runtime_input_dims_to_mark_unbacked.items():
+                    for dim in dims:
+                        torch._dynamo.decorators.mark_unbacked(inputs[i], dim)
+                        print("marking input[", i, "][", dim, "]as unbacked")
 
                 with _disable():
                     return compiled_fn(inputs, sizes, scalars, hooks)
