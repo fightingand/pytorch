@@ -188,9 +188,6 @@ class TestNumPyInterop(TestCase):
                         error_msg = r"Use (t|T)ensor\..*(\.numpy\(\))?"
                         if not force and expect_error:
                             self.assertRaisesRegex(
-                                (RuntimeError, TypeError), error_msg, lambda: x.numpy()
-                            )
-                            self.assertRaisesRegex(
                                 (RuntimeError, TypeError),
                                 error_msg,
                                 lambda: x.numpy(force=False),
