@@ -529,10 +529,7 @@ bool ProcessGroupNCCL::WorkNCCL::isCompleted() {
 }
 
 bool ProcessGroupNCCL::WorkNCCL::isStarted() {
-  if (!ncclComm_->isAborted()) {
-    checkAndSetException();
-  }
-  return exception() || startedGPUExecutionInternal();
+  return startedGPUExecutionInternal();
 }
 
 bool ProcessGroupNCCL::WorkNCCL::isSuccess() const {
@@ -647,10 +644,12 @@ bool ProcessGroupNCCL::WorkNCCL::checkTimeout(
 void ProcessGroupNCCL::WorkNCCL::printTraceback() const {
   // First step we get the corresponding record entry from FR, based on work's
   // trace_id_
-  std::optional<FlightRecorder::Entry> entry =
+  std::optional<FlightRecorder::Entry*> entryPtr =
       FlightRecorder::get()->getEntry(trace_id_);
-  if (entry.has_value()) {
-    auto entryVal = entry.value();
+  if (entryPtr.has_value()) {
+    // Get the entry from FR; dereference it via value copy bc we are going to
+    // hand it to a std::async call
+    auto entryVal = *entryPtr.value();
     // Get stack trace from FR entry, in string format
     // Note: `getTraceback` call below invokes `torch::symbolize`, which may
     // need to acquire the GIL. In order for watchdog to be block-free, we make
@@ -2097,18 +2096,20 @@ void ProcessGroupNCCL::watchdogHandler() {
         work.handleException(asyncErrorHandling_);
       }
 
-      // Work status logging for desync debug
-      desyncDebugger_.logWorkStart(work);
+      if (work.isStarted()) {
+        FlightRecorder::get()->markStart(work.trace_id_);
+        // Work status logging for desync debug
+        desyncDebugger_.logWorkStart(work);
 
-      // a work could be started but not completed, so we should not update
-      // lastStartedSeq and lastStartedOpName if the work state is checked
-      // multiple times after the start
-      if (pgStatus_->lastStartedSeq < static_cast<int64_t>(work.seq_) &&
-          work.isStarted()) {
-        pgStatus_->lastStartedSeq = static_cast<int64_t>(work.seq_);
-        pgStatus_->lastStartedWorkName = opTypeToString(work.opType_);
-        pgStatus_->lastStartedNumelIn = work.numelIn_;
-        pgStatus_->lastStartedNumelOut = work.numelOut_;
+        // a work could be started but not completed, so we should not update
+        // lastStartedSeq and lastStartedOpName if the work state is checked
+        // multiple times after the start
+        if (pgStatus_->lastStartedSeq < static_cast<int64_t>(work.seq_)) {
+          pgStatus_->lastStartedSeq = static_cast<int64_t>(work.seq_);
+          pgStatus_->lastStartedWorkName = opTypeToString(work.opType_);
+          pgStatus_->lastStartedNumelIn = work.numelIn_;
+          pgStatus_->lastStartedNumelOut = work.numelOut_;
+        }
       }
 
       // Clean up completed work
@@ -2133,7 +2134,16 @@ void ProcessGroupNCCL::watchdogHandler() {
         pgStatus_->lastCompletedWorkName = opTypeToString(work.opType_);
         pgStatus_->lastCompletedNumelIn = work.numelIn_;
         pgStatus_->lastCompletedNumelOut = work.numelOut_;
-        FlightRecorder::get()->retire_id(work.trace_id_, true);
+
+        // If the work is completed, we can retire the trace id.
+        std::optional<float> duration = std::nullopt;
+        // Timing must be enabled to compute duration. See
+        // `TORCH_NCCL_ENABLE_TIMING`
+        if (work.timingEnabled_) {
+          duration = work.getDuration();
+        }
+        FlightRecorder::get()->retire_id(work.trace_id_, duration);
+
         if (onCompletionHook_) {
           // Move Work object to completedWorkList_ to be consumed by the hook
           // thread
@@ -2736,8 +2746,6 @@ c10::intrusive_ptr<ProcessGroupNCCL::WorkNCCL> ProcessGroupNCCL::initWork(
         profilingTitle ? profilingTitle : "",
         inputs,
         outputs,
-        r->ncclStartEvent_.get(),
-        r->ncclEndEvent_.get(),
         options_->timeout,
         pgStatus_,
         isP2P);
@@ -3413,8 +3421,6 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::pointToPoint(
         profilingTitle,
         {tensor},
         {tensor},
-        nullptr,
-        nullptr,
         options_->timeout,
         pgStatus_,
         /*isP2P=*/true);
@@ -3455,8 +3461,6 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::pointToPoint(
         profilingTitle,
         {tensor},
         {tensor},
-        work->ncclStartEvent_.get(),
-        work->ncclEndEvent_.get(),
         options_->timeout,
         pgStatus_,
         /*isP2P=*/true);
