@@ -35,7 +35,6 @@ from typing import (
     Set,
     Tuple,
     TYPE_CHECKING,
-    Union,
 )
 from typing_extensions import TypeAlias
 
@@ -85,8 +84,15 @@ class OutputCode(Protocol):
     # How long it took to compile this OutputCode, end to end
     _time_taken_ns: Optional[int]
 
+    guards_expr: Optional[str]
+
     # TODO: Get rid of this
     def set_triton_bundle(self, triton_bundle: Any) -> None:
+        ...
+
+    # TODO: This is bad design! Just know which fields are serializable and
+    # which are not
+    def clear_uncacheable(self) -> None:
         ...
 
 
@@ -294,6 +300,9 @@ class CompiledFxGraph:
         # TODO: should this be part of fx_kwargs
         self.boxed_forward_device_index = boxed_forward_device_index
 
+    def clear_uncacheable(self) -> None:
+        self.current_callable = None
+
     def __call__(self, inputs: Sequence[Any]) -> Any:
         assert self.current_callable is not None
         try:
@@ -347,17 +356,25 @@ def _typecheck_CompiledFxGraph(h: CompiledFxGraph) -> OutputCode:
 @dataclasses.dataclass
 class CompiledAOTI:
     """
-    Class holding an AOTInductor compiled so.
+    Class holding an AOTInductor compiled pt2 package.
     """
 
-    filename: Union[str, List[str]]
+    filename: str
+
+    # TODO: fix type
+    _current_callable: Optional[Any] = None
 
     # TODO: Figure out if these make sense or not here
     _fx_graph_cache_key: Optional[str] = None
     _time_taken_ns: Optional[int] = None
+    guards_expr: Optional[str] = None
 
-    def __call__(self, inputs: Sequence[Any]) -> Any:
-        raise NotImplementedError("NYI")
+    # TODO: make this boxed
+    def __call__(self, *inputs: Sequence[Any]) -> Any:
+        assert self._current_callable is not None
+        return self._current_callable.run(
+            inputs
+        )  # NB: this doesn't actually do boxed convention
 
     def post_compile(
         self,
@@ -365,7 +382,18 @@ class CompiledAOTI:
         cudagraphs: BoxedBool,
         gm: GraphModule,
     ) -> None:
-        pass
+        # TODO: use compile id for model name
+        # NB: Pretty sure we don't need the pytree stuff, Dynamo to Inductor
+        # guarantees flat
+        self._current_callable = torch._C._aoti.AOTIModelPackageLoader(
+            self.filename, "model"
+        )
+
+    # TODO: a "stripped" post_compile that can be done without all of the
+    # random arguments crap here
+
+    def clear_uncacheable(self) -> None:
+        self._current_callable = None
 
     def set_triton_bundle(self, triton_bundle: Any) -> None:
         pass
