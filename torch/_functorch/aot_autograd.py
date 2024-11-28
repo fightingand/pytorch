@@ -959,6 +959,10 @@ def try_get_metadata_from_dynamo(
         # graph was not captured by dynamo
         return None, []
 
+    if torch._dynamo.utils.is_compiled_autograd_gm(mod):
+        # TODO(xmfan): make compiled autograd go through guard dedup
+        return None, []
+
     if not hasattr(mod, "_param_name_to_source"):
         # is from export
         return None, []
@@ -1114,11 +1118,11 @@ def aot_module_simplified(
     else:
         compiled_fn = dispatch_and_compile()
 
-    if isinstance(mod, torch._dynamo.utils.GmWrapper):
-        # This function is called by the flatten_graph_inputs wrapper, which boxes
-        # the inputs so that they can be freed before the end of this scope.
-        # For overhead reasons, this is not the default wrapper, see comment:
-        # https://github.com/pytorch/pytorch/pull/122535/files#r1560096481
+    if isinstance(
+        mod, torch._dynamo.utils.GmWrapper
+    ) or torch._dynamo.utils.is_compiled_autograd_gm(mod):
+        # Unlike `forward`, runtime_args is a List here
+        # which allows us to steal references from runtime_args
         def boxed_forward(runtime_args: List[Any]):
             flat_args = []
             flat_args.extend(params_flat)

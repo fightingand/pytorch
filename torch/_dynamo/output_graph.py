@@ -91,8 +91,10 @@ from .utils import (
     get_static_address_type,
     graph_break_reasons,
     increment_op_count,
+    is_compiled_autograd_gm,
     lazy_format_graph_code,
     LazyString,
+    mark_compiled_autograd_gm,
     nn_module_proxy,
     same,
     set_example_value,
@@ -1426,6 +1428,14 @@ class OutputGraph:
         # NOTE: can't move these into meta: https://github.com/pytorch/pytorch/issues/141640
         gm._param_name_to_source = self.param_name_to_source  # type: ignore[assignment]
         gm._source_to_user_stacks = self.source_to_user_stacks  # type: ignore[assignment]
+        if is_compiled_autograd_gm(self.local_scope.get("self")) and placeholders:
+            assert type(gm.graph._codegen) is torch.fx.graph.CodeGen
+            assert gm.graph._codegen._body_transformer is None
+            boxed_inputs_count = len(self.example_inputs()[0])
+            gm.graph._codegen = torch.fx.graph._CompiledAutogradCodeGen(
+                boxed_inputs_count
+            )
+            mark_compiled_autograd_gm(gm)
 
         try:
             name = (
