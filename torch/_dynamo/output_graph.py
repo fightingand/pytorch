@@ -1418,12 +1418,10 @@ class OutputGraph:
                 placeholders.append(node)
         increment_op_count(tot)
         for pl in placeholders:
-            arg = pl.meta["grapharg"]
-            # TODO: Why isn't this stored in meta :think:
-            pl._dynamo_source = arg.source
+            pl.meta["_dynamo_source"] = pl.meta["grapharg"].source
 
-        gm._param_name_to_source = self.param_name_to_source  # type: ignore[assignment]
-        gm._source_to_user_stacks = self.source_to_user_stacks  # type: ignore[assignment]
+        gm.meta["_param_name_to_source"] = self.param_name_to_source
+        gm.meta["_source_to_user_stacks"] = self.source_to_user_stacks
 
         try:
             name = (
