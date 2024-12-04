@@ -15,6 +15,7 @@ from torch._higher_order_ops.utils import (
     first_slice_copy,
     reenter_make_fx,
     unique_graph_id,
+    check_two_lists_for_same_metadata,
 )
 from torch._inductor.utils import is_pointwise_use
 from torch._ops import HigherOrderOperator
@@ -138,10 +139,55 @@ def associative_scan(
     #     # flat_trees = pytree.tree_unflatten(*flat_args, xs_spec)
     #     # return combine_fn(flat_trees)
     
+    if combine_mode == "generic":
+        # The generic_associative_scan implementation calls the combine_fn with a `batch` along the scan dimension
+        # For example, consider:
+        # def add(x: torch.Tensor, y: torch.Tensor):
+        #     return x + y
+        # leaves = torch.tensor([[0.0, 1.0, 2.0, 3.0]
+        #                        [0.0, 1.0, 2.0, 3.0]])
+        # which has shape 2 x 4;
+        # dim = 1;
+        # In the first iteration of `_scan` the combine_fn gets invoked with
+        # combine_fn([torch.tensor([[0.0, 2.0],
+        #                           [0.0, 2.0]])],
+        #            [torch.tensor([[1.0, 3.0],
+        #                           [1.0, 3.0]])])
+        # The arguments are of shape 2 x 2, but can be evaluated in parallel along the scan dimension.
+        
+        from torch.fx.passes.shape_prop import _extract_tensor_metadata
+        
+        # Call the combine_fn with only a slice along the scan dim
+        # and check whether the output leaves have the same slice dimensions
+        sliced_xs = [first_slice_copy(leaf, dim) for leaf in flat_xs]
+        # sliced_shape = sliced_xs[0].shape
+
+        out = combine_fn(
+            pytree.tree_unflatten(sliced_xs, xs_spec),
+            pytree.tree_unflatten(sliced_xs, xs_spec),
+        )
+        out_leaves = pytree.tree_leaves(out)
+        if len(flat_xs) != len(out_leaves):
+            raise RuntimeError(
+                "The number of leaves of the pytree of the output of the operator needs to match the length of the pytree of the input"
+            )
+            
+        # out_meta = [_extract_tensor_metadata(o) for o in out_leaves]
+        # sliced_meta = [_extract_tensor_metadata(s) for s in sliced_xs]
+        # if any(s_meta != o_meta for s_meta, o_meta in zip(sliced_meta, out_meta)):
+        #     # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
+        #     raise RuntimeError(
+        #         f"The metadata of the output of the combine_fn needs to match the meta data of the xs pytree"
+        #         f"\n  xs metadata             : {[(x.shape, x.dtype, x.stride) for x in sliced_meta]}"
+        #         f"\n  operator output metadata: {[(x.shape, x.dtype, x.stride) for x in out_meta]}"
+        #     )
+        check_two_lists_for_same_metadata(out_leaves, sliced_xs)
+    
     if not torch._dynamo.is_compiling():
         with _set_compilation_env(), torch._dynamo.utils.disable_cache_limit():
             return torch.compile(associative_scan, fullgraph=True)(
-                combine_fn, flat_xs, dim=dim, reverse=reverse, combine_mode=combine_mode
+                combine_fn, xs, dim=dim, reverse=reverse, combine_mode=combine_mode
+                # combine_fn, flat_xs, dim=dim, reverse=reverse, combine_mode=combine_mode
                 # flat_combine_fn, *flat_xs, dim, reverse=reverse, combine_mode=combine_mode
             )
         
@@ -242,6 +288,47 @@ def associative_scan(
         #            [torch.tensor([[1.0, 3.0],
         #                           [1.0, 3.0]])])
         # The arguments are of shape 2 x 2, but can be evaluated in parallel along the scan dimension.
+        
+        # from torch.fx.passes.shape_prop import _extract_tensor_metadata
+        
+        # # Call the combine_fn with only a slice along the scan dim
+        # # and check whether the output leaves have the same slice dimensions
+        # sliced_xs = [first_slice_copy(leaf, dim) for leaf in flat_xs]
+        # # sliced_shape = sliced_xs[0].shape
+
+        # out = combine_fn(
+        #     pytree.tree_unflatten(sliced_xs, xs_spec),
+        #     pytree.tree_unflatten(sliced_xs, xs_spec),
+        # )
+        # out_leaves = pytree.tree_leaves(out)
+        # if len(flat_xs) != len(out_leaves):
+        #     raise RuntimeError(
+        #         "The number of leaves of the pytree of the output of the operator needs to match the length of the pytree of the input"
+        #     )
+            
+        # out_meta = [_extract_tensor_metadata(o) for o in out_leaves]
+        # sliced_meta = [_extract_tensor_metadata(s) for s in sliced_xs]
+        # if any(s_meta != o_meta for s_meta, o_meta in zip(sliced_meta, out_meta)):
+        #     # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
+        #     raise RuntimeError(
+        #         f"The metadata of the output of the combine_fn needs to match the meta data of the xs pytree"
+        #         f"\n  xs metadata             : {[(x.shape, x.dtype, x.stride) for x in sliced_meta]}"
+        #         f"\n  operator output metadata: {[(x.shape, x.dtype, x.stride) for x in out_meta]}"
+        #     )
+        
+        # if any(
+        #     x.shape != sliced_shape
+        #     or x.dtype != x_sliced.dtype
+        #     or x.device != x_sliced.device
+        #     or x.stride() != x_sliced.stride()
+        #     for x, x_sliced in zip(out_leaves, sliced_xs)
+        # ):
+        #     raise RuntimeError(
+        #         f"The metadata of the output of the operator needs to match the meta data of the xs pytree"
+        #         f"\n  xs metadata             : {[(x.shape, x.dtype, x.device, x.stride()) for x in sliced_xs]}"
+        #         f"\n  operator output metadata: {[(x.shape, x.dtype, x.device, x.stride()) for x in out_leaves]}"
+        #     )
+        
         # TODO: In case of the additional inputs, we the in_dims should be set to None
         combine_fn = functools.partial(
             wrap_combine_fn_flat,

@@ -2033,7 +2033,7 @@ def forward(self, pred_1, x_1):
         # Init wrong shape (Other dim different)
         init = torch.randn(1, 2)
         if compile_mode == "none":
-            with self.assertRaisesRegex(torch._dynamo.exc.UncapturedHigherOrderOpError, ".*"):
+            with self.assertRaisesRegex(AssertionError, "The metadata of.*"):
                 result_init = scan_fct(
                     get_scan_combine_fn("add", False),
                     init,
@@ -2043,8 +2043,8 @@ def forward(self, pred_1, x_1):
         else:
             with self.assertRaisesRegex(
                 # Should be: RuntimeError, "The size of tensor a.*"
-                torch._dynamo.exc.UncapturedHigherOrderOpError,
-                ".*",
+                AssertionError,
+                "The metadata of.*"
             ):
                 result_init = scan_fct(
                     get_scan_combine_fn("add", False),
@@ -2396,11 +2396,8 @@ def forward(self, pred_1, x_1):
 
         # Wrong dtype
         with self.assertRaisesRegex(
-            # Should be: RuntimeError: Expected the init and
-            # the new carry produced by the operator to be a tensor of
-            # torch.int64 but got torch.float32 and torch.int64
-            torch._dynamo.exc.UncapturedHigherOrderOpError,
-            ".*",
+            AssertionError,
+            "The metadata of.*"
         ):
             f(add_wrong_dtype, init, x)
 
@@ -3380,10 +3377,8 @@ class AssociativeScanTests(TestCase):
 
         for fct in [fct_wrong_dtype, fct_wrong_device, fct_wrong_stride]:
             with self.assertRaisesRegex(
-                # Should be: RuntimeError,
-                # "The pytree of the output of the operator needs to match the xs pytree"
-                torch._dynamo.exc.Unsupported,
-                "Observed exception.*",
+                AssertionError,
+                "The metadata of .*"
             ):
                 result = associative_scan(fct, x, dim=0)
 
@@ -3403,11 +3398,8 @@ class AssociativeScanTests(TestCase):
         inp = {"i": x, "j": ([y], [{"o": z}])}
 
         with self.assertRaisesRegex(
-            # Should be: RuntimeError,
-            # r"The number of leaves of the pytree of the output of the operator
-            # needs to match the lenght of the pytree of the input",
-            torch._dynamo.exc.Unsupported,
-            "Observed exception.*",
+            RuntimeError,
+            r"The number of leaves of the pytree of the output of the operator needs to match the length of the pytree of the input",
         ):
             result = associative_scan(fct_wrong_pytree, inp, dim=0, combine_mode="generic")
 

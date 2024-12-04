@@ -39,10 +39,11 @@ def wrap_combine_fn_flat(
     carry = pytree.tree_unflatten(args[:num_init_leaves], spec_init)
     xs = pytree.tree_unflatten(args[num_init_leaves:], spec_xs)
     carry, combined = combine_fn(carry, xs)
-    carry_flat = pytree.tree_leaves(carry)
-    combined_flat = pytree.tree_leaves(combined)
-    assert num_init_leaves == len(carry_flat)
-    return [*carry_flat, *combined_flat]
+    # carry_flat = pytree.tree_leaves(carry)
+    # combined_flat = pytree.tree_leaves(combined)
+    # assert num_init_leaves == len(carry_flat)
+    # return [*carry_flat, *combined_flat]
+    return carry, combined
 
 
 def _extract_carry_and_out(flat_out: List[Any], num_carry: int):
@@ -164,7 +165,8 @@ def scan(
     ndim = len(shape)
     dim = utils.canonicalize_dim(ndim, dim)
 
-    outs = combine_fn(pytree.tree_unflatten(flat_init, spec_init),pytree.tree_unflatten([elem.select(dim, 0) for elem in flat_xs], spec_xs))
+    outs = combine_fn(pytree.tree_unflatten(flat_init, spec_init),
+                      pytree.tree_unflatten([elem.select(dim, 0) for elem in flat_xs], spec_xs))
 
     #     # The first output needs to have the same pytree as init
     #     carry_leaves = pytree.tree_leaves(outs[0])
@@ -221,6 +223,8 @@ def scan(
                 )
     else:
         result = run_flattened_scan(combine_fn, flat_init, flat_xs, dim, reverse)
+        
+    # result = run_flattened_scan(combine_fn, flat_init, flat_xs, dim, reverse)
 
     result_carry, result_flat = _extract_carry_and_out(
         result,

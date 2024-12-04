@@ -1191,7 +1191,7 @@ class AssociativeScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
         args: List[VariableTracker],
         kwargs: Dict[str, VariableTracker],
     ) -> VariableTracker:
-        from torch._higher_order_ops.utils import first_slice_copy
+        from torch._higher_order_ops.utils import first_slice_copy, check_two_lists_for_same_metadata
 
         from .builder import wrap_fx_proxy
 
@@ -1270,17 +1270,19 @@ class AssociativeScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             )
             
         # combine_fn output checks
-        combine_result_meta = [_extract_tensor_metadata(res.proxy.node.meta["example_value"], include_contiguity=False) for res in combine_result.items]
-        xs_meta = [_extract_tensor_metadata(_make_inlined(tx, first_slice_copy)(x, dim).proxy.node.meta["example_value"], include_contiguity=False) for x in xs_seq]
-        if any(x_meta != combine_res_meta for x_meta, combine_res_meta in zip(xs_meta, combine_result_meta)):
-            # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
-            unimplemented(
-                f"The metadata of the output of the combine_fn needs to match the meta data of the xs pytree"
-                f"\n  xs metadata             : {[(x.shape, x.dtype, x.stride) for x in xs_meta]}"
-                f"\n  operator output metadata: {[(x.shape, x.dtype, x.stride) for x in combine_result_meta]}"
-            )
+        # combine_result_meta = [_extract_tensor_metadata(res.proxy.node.meta["example_value"], include_contiguity=False) for res in combine_result.items]
+        # xs_meta = [_extract_tensor_metadata(_make_inlined(tx, first_slice_copy)(x, dim).proxy.node.meta["example_value"], include_contiguity=False) for x in xs_seq]
+        # if any(x_meta != combine_res_meta for x_meta, combine_res_meta in zip(xs_meta, combine_result_meta)):
+        #     # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
+        #     unimplemented(
+        #         f"The metadata of the output of the combine_fn needs to match the meta data of the xs pytree"
+        #         f"\n  xs metadata             : {[(x.shape, x.dtype, x.stride) for x in xs_meta]}"
+        #         f"\n  operator output metadata: {[(x.shape, x.dtype, x.stride) for x in combine_result_meta]}"
+        #     )
+        check_two_lists_for_same_metadata([res.proxy.node.meta["example_value"] for res in combine_result.items],
+                                          [_make_inlined(tx, first_slice_copy)(x, dim).proxy.node.meta["example_value"] for x in xs_seq])
 
-        # xs_proxy = tuple(x.as_proxy() for x in xs_seq)
+        xs_proxy = tuple(x.as_proxy() for x in xs_seq)
         # combine_result_proxy = combine_result.as_proxy()
         # for result, inp_proxy in zip(combine_result_proxy, xs_proxy):
         #     inp_meta = inp_proxy.node.meta["example_value"]
@@ -1333,6 +1335,7 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             first_slice_copy,
             stack_y,
         )
+        from torch._higher_order_ops.utils import check_two_lists_for_same_metadata
 
         from .builder import wrap_fx_proxy
 
@@ -1500,15 +1503,17 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
         out_proxies = [out_var.as_proxy() for out_var in out_vars]
         
         # combine_fn carries checks
-        combine_carries_meta = [_extract_tensor_metadata(car.proxy.node.meta["example_value"], include_contiguity=False) for car in carry_vars]
-        init_meta = [_extract_tensor_metadata(i.proxy.node.meta["example_value"], include_contiguity=False) for i in init_seq]
-        if any(i_meta != combine_car_meta for i_meta, combine_car_meta in zip(init_meta, combine_carries_meta)):
-            # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
-            unimplemented(
-                f"The metadata of the carries of the combine_fn needs to match the meta data of the init pytree"
-                f"\n  init metadata          : {[(x.shape, x.dtype, x.stride) for x in init_meta]}"
-                f"\n  operator carry metadata: {[(x.shape, x.dtype, x.stride) for x in combine_carries_meta]}"
-            )
+        # combine_carries_meta = [_extract_tensor_metadata(car.proxy.node.meta["example_value"], include_contiguity=False) for car in carry_vars]
+        # init_meta = [_extract_tensor_metadata(i.proxy.node.meta["example_value"], include_contiguity=False) for i in init_seq]
+        # if any(i_meta != combine_car_meta for i_meta, combine_car_meta in zip(init_meta, combine_carries_meta)):
+        #     # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
+        #     unimplemented(
+        #         f"The metadata of the carries of the combine_fn needs to match the meta data of the init pytree"
+        #         f"\n  init metadata          : {[(x.shape, x.dtype, x.stride) for x in init_meta]}"
+        #         f"\n  operator carry metadata: {[(x.shape, x.dtype, x.stride) for x in combine_carries_meta]}"
+        #     )
+        check_two_lists_for_same_metadata([car.proxy.node.meta["example_value"] for car in carry_vars],
+                                          [i.proxy.node.meta["example_value"] for i in init_seq])
 
         # # Checks for carry and init
         # for ini_proxy, carry in zip(init_proxy, carry_proxies):

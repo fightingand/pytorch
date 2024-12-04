@@ -9,6 +9,7 @@ import torch.fx.traceback as fx_traceback
 import torch.utils._pytree as pytree
 from torch._ops import OperatorBase
 from torch.fx.experimental.proxy_tensor import make_fx
+from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from torch.multiprocessing.reductions import StorageWeakRef
 
 
@@ -495,3 +496,17 @@ def validate_subgraph_args_types(lifted_args: Union[Tuple[Any, ...], List[Any]])
     assert all(
         isinstance(arg, (torch.Tensor, int, torch.SymInt)) for arg in lifted_args
     ), f"{lifted_args} can only be of {allowed_types} but got {tuple(type(arg) for arg in lifted_args)}"
+
+
+# Check the meta data of two flattened lists of leaves.
+# This function is for example useful if the input and the output of a combine_fn are required to have the same
+# meta data
+def check_two_lists_for_same_metadata(leaves_a, leaves_b):
+    la_meta = [_extract_tensor_metadata(la, include_contiguity=False) for la in leaves_a]
+    lb_meta = [_extract_tensor_metadata(lb, include_contiguity=False) for lb in leaves_b]
+    
+    # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
+    assert any(la == lb for la, lb in zip(la_meta, lb_meta)), \
+            f"The metadata of leaves_a needs to match the metadata of leaves_b"\
+            f"\n  leaves_a metadata             : {[(x.shape, x.dtype, x.stride) for x in la_meta]}"\
+            f"\n  leaves_a metadata: {[(x.shape, x.dtype, x.stride) for x in lb_meta]}"
