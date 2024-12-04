@@ -1,0 +1,29 @@
+name: Dispatch PR Events to Out-of-tree TestInfra
+
+on:
+  pull_request:
+
+jobs:
+  dispatch-event:
+    if: github.repository_owner == 'pytorch'
+    name: Dispatch events to the out-of-tree test infra repo
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create a repository dispatch event
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.PYTORCH_BOT_TOKEN }}
+          repository: pytorch/accelerator-test-infra
+          event-type: pytorch-pr-event
+          client-payload: |-
+            {
+              "owner": "${{ github.repository_owner }}",
+              "repo": "${{ github.repository }}",
+              "event_name": "${{ github.event_name }}",
+              "pull_request": {
+                "title": "${{ github.event.pull_request.title }}"
+              }
+            }
