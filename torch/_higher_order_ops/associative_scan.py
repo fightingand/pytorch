@@ -21,6 +21,7 @@ from torch._inductor.utils import is_pointwise_use
 from torch._ops import HigherOrderOperator
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.fx.experimental.proxy_tensor import (
+    _temp_remove_metadata_torch_function_mode,
     disable_proxy_modes_tracing,
     ProxyTorchDispatchMode,
     track_tensor_tree,
@@ -35,9 +36,7 @@ def wrap_combine_fn_flat(*args, combine_fn, spec, num_leaves):
     lhs = pytree.tree_unflatten(args[:num_leaves], spec)
     rhs = pytree.tree_unflatten(args[num_leaves:], spec)
     combined = combine_fn(lhs, rhs)
-    combined_leaves = pytree.tree_leaves(combined)
-    assert num_leaves == len(combined_leaves)
-    return combined_leaves
+    return combined
 
 
 def _interleave(a, b, dim):
@@ -131,65 +130,28 @@ def associative_scan(
     # we want to create a consistent input ordering for combine_fn
     # and we also want to the input ordering matches the output ordering.
     flat_xs, xs_spec = pytree.tree_flatten(xs)
-
-    # def flat_combine_fn(*flat_args):
-    #     lhs_trees = pytree.tree_unflatten(*flat_args[0], xs_spec)
-    #     rhs_trees = pytree.tree_unflatten(*flat_args[1], xs_spec)
-    #     return combine_fn(lhs_trees, rhs_trees)
-    #     # flat_trees = pytree.tree_unflatten(*flat_args, xs_spec)
-    #     # return combine_fn(flat_trees)
     
     if combine_mode == "generic":
-        # The generic_associative_scan implementation calls the combine_fn with a `batch` along the scan dimension
-        # For example, consider:
-        # def add(x: torch.Tensor, y: torch.Tensor):
-        #     return x + y
-        # leaves = torch.tensor([[0.0, 1.0, 2.0, 3.0]
-        #                        [0.0, 1.0, 2.0, 3.0]])
-        # which has shape 2 x 4;
-        # dim = 1;
-        # In the first iteration of `_scan` the combine_fn gets invoked with
-        # combine_fn([torch.tensor([[0.0, 2.0],
-        #                           [0.0, 2.0]])],
-        #            [torch.tensor([[1.0, 3.0],
-        #                           [1.0, 3.0]])])
-        # The arguments are of shape 2 x 2, but can be evaluated in parallel along the scan dimension.
+        # In the `pointwise` path these checks are done in _dynamo
         
         from torch.fx.passes.shape_prop import _extract_tensor_metadata
         
         # Call the combine_fn with only a slice along the scan dim
         # and check whether the output leaves have the same slice dimensions
         sliced_xs = [first_slice_copy(leaf, dim) for leaf in flat_xs]
-        # sliced_shape = sliced_xs[0].shape
 
         out = combine_fn(
             pytree.tree_unflatten(sliced_xs, xs_spec),
             pytree.tree_unflatten(sliced_xs, xs_spec),
         )
-        out_leaves = pytree.tree_leaves(out)
+        out_leaves, out_spec = pytree.tree_flatten(out)
         if len(flat_xs) != len(out_leaves):
             raise RuntimeError(
-                "The number of leaves of the pytree of the output of the operator needs to match the length of the pytree of the input"
+                "The number of leaves of the pytree of the output of the operator needs to match the length of the pytree of the xs"
             )
-            
-        # out_meta = [_extract_tensor_metadata(o) for o in out_leaves]
-        # sliced_meta = [_extract_tensor_metadata(s) for s in sliced_xs]
-        # if any(s_meta != o_meta for s_meta, o_meta in zip(sliced_meta, out_meta)):
-        #     # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
-        #     raise RuntimeError(
-        #         f"The metadata of the output of the combine_fn needs to match the meta data of the xs pytree"
-        #         f"\n  xs metadata             : {[(x.shape, x.dtype, x.stride) for x in sliced_meta]}"
-        #         f"\n  operator output metadata: {[(x.shape, x.dtype, x.stride) for x in out_meta]}"
-        #     )
+        
+        # Check for the same metadata
         check_two_lists_for_same_metadata(out_leaves, sliced_xs)
-    
-    if not torch._dynamo.is_compiling():
-        with _set_compilation_env(), torch._dynamo.utils.disable_cache_limit():
-            return torch.compile(associative_scan, fullgraph=True)(
-                combine_fn, xs, dim=dim, reverse=reverse, combine_mode=combine_mode
-                # combine_fn, flat_xs, dim=dim, reverse=reverse, combine_mode=combine_mode
-                # flat_combine_fn, *flat_xs, dim, reverse=reverse, combine_mode=combine_mode
-            )
         
     def _validate_input(combine_fn, flat_xs, dim, combine_mode):
         from torch._higher_order_ops.utils import validate_subgraph_args_types
@@ -221,10 +183,18 @@ def associative_scan(
             raise ValueError(
                 "All elements of xs must at least have 'dim' number of dimensions"
             )
+        shape = flat_xs[0].shape
+        if any(x.shape != shape for x in flat_xs[1:]):
+            raise ValueError(
+                "All xs tensors must have the same shape"
+            )
         if any(x.shape[dim] == 0 for x in flat_xs):
             raise ValueError(
                 "The scan dimension of all elements of xs must be > 0"
             )
+            
+    ndim = flat_xs[0].ndim
+    dim = utils.canonicalize_dim(ndim, dim)
 
     if len(leaves) == 0:
         raise ValueError("Expected at least 1 xs leaf")
@@ -289,51 +259,10 @@ def associative_scan(
         #                           [1.0, 3.0]])])
         # The arguments are of shape 2 x 2, but can be evaluated in parallel along the scan dimension.
         
-        # from torch.fx.passes.shape_prop import _extract_tensor_metadata
-        
-        # # Call the combine_fn with only a slice along the scan dim
-        # # and check whether the output leaves have the same slice dimensions
-        # sliced_xs = [first_slice_copy(leaf, dim) for leaf in flat_xs]
-        # # sliced_shape = sliced_xs[0].shape
-
-        # out = combine_fn(
-        #     pytree.tree_unflatten(sliced_xs, xs_spec),
-        #     pytree.tree_unflatten(sliced_xs, xs_spec),
-        # )
-        # out_leaves = pytree.tree_leaves(out)
-        # if len(flat_xs) != len(out_leaves):
-        #     raise RuntimeError(
-        #         "The number of leaves of the pytree of the output of the operator needs to match the length of the pytree of the input"
-        #     )
-            
-        # out_meta = [_extract_tensor_metadata(o) for o in out_leaves]
-        # sliced_meta = [_extract_tensor_metadata(s) for s in sliced_xs]
-        # if any(s_meta != o_meta for s_meta, o_meta in zip(sliced_meta, out_meta)):
-        #     # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
-        #     raise RuntimeError(
-        #         f"The metadata of the output of the combine_fn needs to match the meta data of the xs pytree"
-        #         f"\n  xs metadata             : {[(x.shape, x.dtype, x.stride) for x in sliced_meta]}"
-        #         f"\n  operator output metadata: {[(x.shape, x.dtype, x.stride) for x in out_meta]}"
-        #     )
-        
-        # if any(
-        #     x.shape != sliced_shape
-        #     or x.dtype != x_sliced.dtype
-        #     or x.device != x_sliced.device
-        #     or x.stride() != x_sliced.stride()
-        #     for x, x_sliced in zip(out_leaves, sliced_xs)
-        # ):
-        #     raise RuntimeError(
-        #         f"The metadata of the output of the operator needs to match the meta data of the xs pytree"
-        #         f"\n  xs metadata             : {[(x.shape, x.dtype, x.device, x.stride()) for x in sliced_xs]}"
-        #         f"\n  operator output metadata: {[(x.shape, x.dtype, x.device, x.stride()) for x in out_leaves]}"
-        #     )
-        
         # TODO: In case of the additional inputs, we the in_dims should be set to None
         combine_fn = functools.partial(
             wrap_combine_fn_flat,
             combine_fn=torch.vmap(
-                # flat_combine_fn,
                 combine_fn,
                 in_dims=(
                     pytree.tree_unflatten([dim] * len(flat_xs), xs_spec),
@@ -344,21 +273,53 @@ def associative_scan(
             spec=xs_spec,
             num_leaves=len(flat_xs),
         )
-        result_flat = generic_associative_scan(combine_fn, flat_xs, dim=dim)
     else:
         combine_fn = functools.partial(
             wrap_combine_fn_flat,
-            # combine_fn=flat_combine_fn,
             combine_fn=combine_fn,
             spec=xs_spec,
             num_leaves=len(flat_xs),
         )
-        result_flat = associative_scan_op(combine_fn, flat_xs, dim=dim)
+    
+    def run_flattened_associative_scan(combine_fn, flat_xs, dim):
+        if combine_mode == "generic":
+            return generic_associative_scan(combine_fn, flat_xs, dim=dim)
+        else:
+            return associative_scan_op(combine_fn, flat_xs, dim=dim)
+        
+    if not torch._dynamo.is_compiling():
+        from torch._dynamo.backends.debugging import (
+            make_eager_backend_with_torch_function_mode,
+        )
+
+        with _set_compilation_env(), torch._dynamo.utils.disable_cache_limit():
+            with _temp_remove_metadata_torch_function_mode() as metadata_mode:
+                if metadata_mode:
+                    backend = make_eager_backend_with_torch_function_mode(metadata_mode)
+                else:
+                    backend = "eager"
+                result = torch.compile(
+                    run_flattened_associative_scan, backend=backend, fullgraph=True
+                )(
+                    combine_fn,
+                    flat_xs,
+                    dim=dim
+                )
+    else:
+        result = run_flattened_associative_scan(combine_fn, flat_xs, dim)
 
     if reverse:
+        result_flat, res_spec = pytree.tree_flatten(result)
         result_flat = [torch.flip(elem, [dim]) for elem in result_flat]
+        result = pytree.tree_unflatten(result_flat, res_spec)
 
-    return pytree.tree_unflatten(result_flat, xs_spec)
+    # Check for the same pytree structure
+    if not xs_spec.__eq__(pytree.tree_structure(result)):
+        raise RuntimeError(
+            "The pytree of the output of the operator needs to match the pytree of the xs"
+        )
+
+    return result
 
 
 def generic_associative_scan(operator, leaves, dim=0):
@@ -409,31 +370,52 @@ def generic_associative_scan(operator, leaves, dim=0):
 
     """
 
+    out_spec = None
+    
+    def call_operator(xs1, xs2):
+        out_tree = operator(
+            *xs1,
+            *xs2,
+        )
+
+        # Flatten the pytree of results
+        return pytree.tree_leaves(out_tree)
+
     def _scan(elems):
         """Perform the actual recursive scan on ``elems``."""
         num_elems = elems[0].shape[dim]
 
+        nonlocal out_spec
+
         if num_elems < 2:
+            # Make a dummy call to the operator in order to get the output treespec
+            reduced_elems_tree = operator(
+                *elems,
+                *elems,
+            )
+
+            # Flatten the pytree of results
+            reduced_elems, tmp_spec = pytree.tree_flatten(reduced_elems_tree)
+            out_spec = tmp_spec
+            
             return elems
 
-        reduced_elems = operator(
-            *[aten.slice(elem, dim, 0, -1, 2) for elem in elems],
-            *[aten.slice(elem, dim, 1, None, 2) for elem in elems],
-        )
+        # Call the operator and flatten the pytree results
+        reduced_elems = call_operator([aten.slice(elem, dim, 0, -1, 2) for elem in elems],
+                                      [aten.slice(elem, dim, 1, None, 2) for elem in elems])
 
         # Recursively compute scan for partially reduced tensors.
         odd_elems = _scan(reduced_elems)
 
         if num_elems % 2 == 0:
-            even_elems = operator(
-                *[aten.slice(e, dim, 0, -1) for e in odd_elems],
-                *[aten.slice(e, dim, 2, None, 2) for e in elems],
-            )
+            # Call the operator and flatten the pytree results
+            even_elems = call_operator([aten.slice(e, dim, 0, -1) for e in odd_elems],
+                                       [aten.slice(e, dim, 2, None, 2) for e in elems])
+        
         else:
-            even_elems = operator(
-                *odd_elems,
-                *[aten.slice(e, dim, 2, None, 2) for e in elems],
-            )
+            # Call the operator and flatten the pytree results
+            even_elems = call_operator(odd_elems,
+                                       [aten.slice(e, dim, 2, None, 2) for e in elems])
 
         # The first element of a scan is the same as the first element
         # of the original `elems`.
@@ -453,8 +435,8 @@ def generic_associative_scan(operator, leaves, dim=0):
         )
 
     scans = _scan(leaves)
-
-    return scans
+    
+    return pytree.tree_unflatten(scans, out_spec)
 
 
 def trace_associative_scan(

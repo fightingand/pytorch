@@ -1192,14 +1192,9 @@ class AssociativeScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
         kwargs: Dict[str, VariableTracker],
     ) -> VariableTracker:
         from torch._higher_order_ops.utils import first_slice_copy, check_two_lists_for_same_metadata
-
-        from .builder import wrap_fx_proxy
+        from torch._inductor.utils import is_pointwise_use
 
         args, kwargs = LazyVariableTracker.realize_all((args, kwargs))
-        # def arg_extractor(combine_fn, xs, dim):
-        #     return combine_fn, xs, dim
-
-        # combine_fn, xs, dim = arg_extractor(*args, **kwargs)
         
         def arg_extractor(combine_fn, xs):
             return combine_fn, xs
@@ -1242,7 +1237,6 @@ class AssociativeScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
         with discard_graph_changes(tx):
             sub_args = [
                 _make_inlined(tx, first_slice_copy)(x, dim)
-                # for leaf in itertools.chain(xs_seq.items, xs_seq.items)
                 for x in itertools.chain(xs_seq, xs_seq)
             ]
         (
@@ -1257,47 +1251,38 @@ class AssociativeScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             description="associative_scan_combine_fn",
             source_target=self.value,
             set_subgraph_inputs="flatten_manual",
+            should_flatten_outputs=True,
         )
 
         if combine_lifted_freevars:
             unimplemented(
                 f"Combine fn had unexpected freevars: {combine_lifted_freevars}"
             )
+        
+        # TODO: This check for the pointwise function currently fails, as all call_functions are 
+        # categorized as non-pointwise
+        for node in combine_graph.nodes:
+            if node.op == "output":
+                assert outputs is None
+                assert len(node.args) == 1
+                outputs = node.args[0]
+
+            if not all(is_pointwise_use(use) or use.op == "output" for use in node.users):
+                unimplemented(
+                    "For combine_mode='pointwise', the combine_fn needs to be pointwise"
+                )
             
         if len(combine_result.items) != len(xs_seq):
             unimplemented(
                 f"The number of output elements of the combine_fn needs to number of the elements of the input"
             )
             
-        # combine_fn output checks
-        # combine_result_meta = [_extract_tensor_metadata(res.proxy.node.meta["example_value"], include_contiguity=False) for res in combine_result.items]
-        # xs_meta = [_extract_tensor_metadata(_make_inlined(tx, first_slice_copy)(x, dim).proxy.node.meta["example_value"], include_contiguity=False) for x in xs_seq]
-        # if any(x_meta != combine_res_meta for x_meta, combine_res_meta in zip(xs_meta, combine_result_meta)):
-        #     # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
-        #     unimplemented(
-        #         f"The metadata of the output of the combine_fn needs to match the meta data of the xs pytree"
-        #         f"\n  xs metadata             : {[(x.shape, x.dtype, x.stride) for x in xs_meta]}"
-        #         f"\n  operator output metadata: {[(x.shape, x.dtype, x.stride) for x in combine_result_meta]}"
-        #     )
+        # Check metadata of output of operator and xs
         check_two_lists_for_same_metadata([res.proxy.node.meta["example_value"] for res in combine_result.items],
                                           [_make_inlined(tx, first_slice_copy)(x, dim).proxy.node.meta["example_value"] for x in xs_seq])
 
         xs_proxy = tuple(x.as_proxy() for x in xs_seq)
-        # combine_result_proxy = combine_result.as_proxy()
-        # for result, inp_proxy in zip(combine_result_proxy, xs_proxy):
-        #     inp_meta = inp_proxy.node.meta["example_value"]
-        #     combine_result_meta = result.node.meta["example_value"]
-        #     if combine_result_meta.device != inp_meta.device:
-        #         unimplemented(
-        #             f"Expected combine_fn to return a tensor on device {inp_meta.device} but "
-        #             + f"got {combine_result_meta.device}"
-        #         )
-        #     if combine_result_meta.dtype != inp_meta.dtype:
-        #         unimplemented(
-        #             f"Expected combine_fn to return a tensor of {inp_meta.dtype} but "
-        #             + f"got {combine_result_meta.dtype}"
-        #         )
-
+        
         combine_gm = torch.fx.GraphModule(dict(tx.output.nn_modules), combine_graph)
         combine_fn_name = add_subgraph(tx, "associative_scan_combine_fn", combine_gm)
 
@@ -1311,12 +1296,9 @@ class AssociativeScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             out_meta = tuple(
                 inp_proxy.node.meta["example_value"].clone() for inp_proxy in xs_proxy
             )
-        return wrap_fx_proxy(
-            tx=tx,
-            proxy=tx.output.create_proxy(
-                "call_function", torch.ops.higher_order.associative_scan, p_args, {}
-            ),
-            example_value=out_meta,
+
+        return _call_function_and_unflatten_output(
+            tx, torch.ops.higher_order.associative_scan, p_args, {}, out_meta, combine_treespec
         )
 
 
@@ -1501,6 +1483,14 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
         )
         # carry_proxies = [carry_var.as_proxy() for carry_var in carry_vars]
         out_proxies = [out_var.as_proxy() for out_var in out_vars]
+        
+        # Check for the same pytree
+        # same_treespec = _make_inlined(tx, pytree.TreeSpec.__eq__)(
+        #     true_treespec, false_treespec
+        # )
+        # if not same_treespec.as_python_constant():
+        #     unimplemented("Expected branches to return the same pytree structure.")
+        
         
         # combine_fn carries checks
         # combine_carries_meta = [_extract_tensor_metadata(car.proxy.node.meta["example_value"], include_contiguity=False) for car in carry_vars]
