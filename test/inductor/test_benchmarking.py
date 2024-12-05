@@ -9,6 +9,7 @@ from torch._inductor import config
 from torch._inductor.runtime.benchmarking import (
     Benchmarker,
     InductorBenchmarker,
+    InductorGroupedBenchmarker,
     is_feature_enabled,
     TritonBenchmarker,
 )
@@ -25,6 +26,7 @@ ALL_BENCHMARKER_CLASSES = (
     Benchmarker,
     TritonBenchmarker,
     InductorBenchmarker,
+    InductorGroupedBenchmarker,
 )
 
 
@@ -94,6 +96,31 @@ class TestBenchmarker(TestCase):
                 self.get_counter_value(benchmarker_cls, "triton_do_bench"), 1
             )
 
+    @unittest.skipIf(not HAS_GPU, "requires GPU")
+    @decorateIf(
+        unittest.expectedFailure,
+        lambda params: params["benchmarker_cls"] is Benchmarker,
+    )
+    @parametrize("benchmarker_cls", ALL_BENCHMARKER_CLASSES)
+    def test_benchmark_many_gpu_smoke(self, benchmarker_cls, device=GPU_TYPE):
+        benchmarker = benchmarker_cls()
+        callables = [self.make_params(device)[1] for _ in range(10)]
+        timings = benchmarker.benchmark_many_gpu(callables)
+        for timing in timings:
+            self.assertGreater(timing, 0)
+        if benchmarker_cls is InductorGroupedBenchmarker:
+            self.assertEqual(
+                self.get_counter_value(benchmarker_cls, "benchmark_many_gpu", 1)
+            )
+        else:
+            self.assertEqual(
+                self.get_counter_value(benchmarker_cls, "benchmark_gpu"), 10
+            )
+        if benchmarker_cls is TritonBenchmarker:
+            self.assertEqual(
+                self.get_counter_value(benchmarker_cls, "triton_do_bench"), 1
+            )
+
     @unittest.skipIf(not HAS_CPU and not HAS_GPU, "requires CPU or GPU")
     @unittest.expectedFailure
     @parametrize("benchmarker_cls", ALL_BENCHMARKER_CLASSES)
@@ -117,7 +144,9 @@ class TestBenchmarker(TestCase):
         benchmarker.benchmark(fn, many_devices_args, many_devices_kwargs)
 
     @unittest.skipIf(config.is_fbcode(), "test does not run in fbcode")
-    @parametrize("feature_name", ("inductor_benchmarker",))
+    @parametrize(
+        "feature_name", ("inductor_benchmarker", "inductor_grouped_benchmarker")
+    )
     @parametrize(
         "config_name,config_val,expected",
         [
@@ -146,9 +175,9 @@ class TestBenchmarker(TestCase):
                 inner(),
                 getattr(config.benchmarking, feature_name).oss_default,
             )
-    
+
     @unittest.skipIf(not HAS_CPU or not HAS_GPU, "requires CPU and GPU")
-    @parametrize("fn_name", ("benchmark", "benchmark_cpu", "benchmark_gpu",))
+    @parametrize("fn_name", ("benchmark", "benchmark_cpu", "benchmark_gpu", "benchmark_many_gpu",))
     @parametrize("enabled", (True, False,))
     @parametrize("device", (GPU_TYPE, "cpu",))
     def test_inductor_benchmarker_fallback(self, fn_name, enabled, device):
@@ -157,8 +186,12 @@ class TestBenchmarker(TestCase):
         })
         def inner():
             benchmarker = InductorBenchmarker()
-            _, _callable = self.make_params(device)
-            _ = getattr(benchmarker, fn_name)(_callable)
+            if "many" in fn_name:
+                callables = [self.make_params(device)[1] for _ in range(10)]
+                _ = getattr(benchmarker, fn_name)(callables)
+            else:
+                _, _callable = self.make_params(device)
+                _ = getattr(benchmarker, fn_name)(_callable)
 
         inner()
         if not enabled and fn_name == "benchmark_gpu":
@@ -168,6 +201,39 @@ class TestBenchmarker(TestCase):
         else:
             # all other benchmark functions should still pass, since they are inherited
             self.assertEqual(self.get_counter_value(InductorBenchmarker, fn_name), 1)
+    
+    @unittest.skipIf(not HAS_CPU or not HAS_GPU, "requires CPU and GPU")
+    @parametrize("fn_name", ("benchmark", "benchmark_cpu", "benchmark_gpu", "benchmark_many_gpu",))
+    @parametrize("enabled", (True, False,))
+    @parametrize("inductor_benchmarker_enabled", (True, False,))
+    @parametrize("device", (GPU_TYPE, "cpu",))
+    def test_inductor_grouped_benchmarker_fallback(self, fn_name, enabled, inductor_benchmarker_enabled, device):
+        @config.patch({
+            f"benchmarking.{InductorGroupedBenchmarker.feature_name}.env_val": 1 if enabled else 0,
+            f"benchmarking.{InductorBenchmarker.feature_name}.env_val": 1 if inductor_benchmarker_enabled else 0,
+        })
+        def inner():
+            benchmarker = InductorGroupedBenchmarker()
+            if "many" in fn_name:
+                callables = [self.make_params(device)[1] for _ in range(10)]
+                _ = getattr(benchmarker, fn_name)(callables)
+            else:
+                _, _callable = self.make_params(device)
+                _ = getattr(benchmarker, fn_name)(_callable)
+
+        inner()
+        if not enabled and fn_name == "benchmark_gpu":
+            if inductor_benchmarker_enabled:
+                self.assertEqual(self.get_counter_value(InductorBenchmarker, fn_name), 1)
+            else:
+                self.assertEqual(self.get_counter_value(TritonBenchmarker, fn_name), 1)
+        elif not enabled and fn_name == "benchmark_many_gpu":
+            if inductor_benchmarker_enabled:
+                self.assertEqual(self.get_counter_value(InductorBenchmarker, fn_name), 10)
+            else:
+                self.assertEqual(self.get_counter_value(TritonBenchmarker, fn_name), 10)
+        else:
+            self.assertEqual(self.get_counter_value(InductorGroupedBenchmarker, fn_name), 1)
 
 
 if __name__ == "__main__":
