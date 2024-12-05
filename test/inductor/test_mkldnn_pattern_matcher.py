@@ -304,6 +304,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
     def test_conv3d_unary_cpu(self):
         self._test_conv_unary_cpu_base(dim=5)
 
+    @bf32_on_and_off()
     def test_linear_unary(self):
         class M(torch.nn.Module):
             def __init__(
@@ -332,6 +333,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
             dtypes.append(torch.bfloat16)
         if torch.ops.mkldnn._is_mkldnn_fp16_supported():
             dtypes.append(torch.float16)
+        if torch.backends.mkldnn.matmul.fp32_precision == "bf16":
+            dtypes.append(torch.float32)
         options = itertools.product(unary_list, [True, False], dtypes)
         for unary_fn, bias, dtype in options:
             metrics.reset()
@@ -342,7 +345,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
 
             def matcher_check_fn():
                 match_nodes = unary_list[unary_fn]
-                if self._check_unary_is_decomposed(unary_fn):
+                if dtype != torch.float32 and self._check_unary_is_decomposed(unary_fn):
                     # Has extra dtype conversion nodes for autocast.
                     match_nodes += 2
                 self.assertEqual(
@@ -354,9 +357,12 @@ class TestPatternMatcher(TestPatternMatcherBase):
                 )
 
             self._test_common(mod, (v,), matcher_check_fn, check_autocast=dtype)
-            # only generated 1 kernel for "to"
-            self.assertEqual(metrics.generated_kernel_count, 1)
+            # only generated 1 kernel for "to_dtype"
+            self.assertEqual(
+                metrics.generated_kernel_count, 0 if dtype == torch.float32 else 1
+            )
 
+    @bf32_on_and_off()
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
     def test_linear_fp32(self):
         class M(torch.nn.Module):
@@ -762,6 +768,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
     def test_conv3d_binary_broadcast_shapes_cpu(self):
         self._test_conv_binary_broadcast_shapes_base(dim=5)
 
+    @bf32_on_and_off()
     def test_linear_binary(self):
         class M(torch.nn.Module):
             def __init__(self, binary_fn, in_channels, out_channels, bias, **kwargs):
@@ -781,6 +788,8 @@ class TestPatternMatcher(TestPatternMatcherBase):
             dtypes.append(torch.bfloat16)
         if torch.ops.mkldnn._is_mkldnn_fp16_supported():
             dtypes.append(torch.float16)
+        if torch.backends.mkldnn.matmul.fp32_precision == "bf16":
+            dtypes.append(torch.float32)
         options = itertools.product(
             binary_list, [[2, 3, 10], [2, 10]], [True, False], dtypes
         )
@@ -880,8 +889,12 @@ class TestPatternMatcher(TestPatternMatcherBase):
                 matcher_check_fn,
                 check_autocast=dtype,
             )
-            self.assertEqual(metrics.generated_kernel_count, 1)
+            # only generated 1 kernel for "to_dtype"
+            self.assertEqual(
+                metrics.generated_kernel_count, 0 if dtype == torch.float32 else 1
+            )
 
+    @bf32_on_and_off()
     def test_multi_linear_share_same_input(self):
         # llama pattern.
         class M(torch.nn.Module):
