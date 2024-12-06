@@ -1389,7 +1389,8 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             if type(dim.as_proxy()) == int
             else get_fake_value(dim.as_proxy().node, tx)
         )
-        scan_length = get_fake_value(xs.items[0].as_proxy().node, tx).size()[dim_fake]
+        
+        scan_length = get_fake_value(xs_seq[0].as_proxy().node, tx).size()[dim_fake]
         if scan_length == 0:
             unimplemented(
                 "scan() operator doesn't support zero-sized tensors during tracing."
@@ -1473,12 +1474,14 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             example_carry = [
                 init_p.node.meta["example_value"].clone() for init_p in init_proxy
             ]
+            
             # For the fake mode, we need to duplicate the init tensor along the dim
             # to have the same size as the xs arguments
-            example_stacked_out = [
+            example_out = [
                 stack_y(y.node.meta["example_value"], scan_length) for y in out_proxies
             ]
-            out_meta = [*example_carry, *example_stacked_out]
+            
+            out_meta = [*example_carry, *example_out]
 
         return _call_function_and_unflatten_output(
             tx, torch.ops.higher_order.scan, p_args, {}, out_meta, combine_treespec

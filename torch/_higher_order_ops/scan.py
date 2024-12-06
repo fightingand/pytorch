@@ -109,6 +109,10 @@ def scan(
     # and we also want to the input ordering matches the output ordering.
     flat_init, init_spec = pytree.tree_flatten(init)
     flat_xs, xs_spec = pytree.tree_flatten(xs)
+    
+    # Shortcut if no xs is provided
+    if len(flat_xs) == 0:
+        return init, []
         
     def _validate_input(combine_fn, flat_xs, flat_init, dim):
         if not callable(combine_fn):
@@ -138,7 +142,8 @@ def scan(
             return pytree.tree_unflatten(flat_init, init_spec), xs
         
     _validate_input(combine_fn, flat_xs, flat_init, dim)
-                
+              
+    # Canonicalize the dim
     shape = flat_xs[0].shape
     ndim = len(shape)
     dim = utils.canonicalize_dim(ndim, dim)
