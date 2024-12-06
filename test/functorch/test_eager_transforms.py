@@ -4786,7 +4786,6 @@ def forward(self, x_1) -> torch.Tensor:
     view_copy = torch.ops.aten.view_copy.default(x_1, [4, 2])
     add = torch.ops.aten.add.Tensor(view_copy, ones);  view_copy = ones = None
     view_copy_1 = torch.ops.aten.view_copy.default(add, [4, 2]);  add = None
-    view_copy_2 = torch.ops.aten.view_copy.default(view_copy_1, [4, 2]);  view_copy_2 = None
     copy_ = torch.ops.aten.copy_.default(x_1, view_copy_1);  x_1 = copy_ = None
     return view_copy_1
     """,
@@ -4831,12 +4830,10 @@ def forward(self, x_1) -> torch.Tensor:
 def forward(self, inpt_1) -> torch.Tensor:
     empty = torch.ops.aten.empty.memory_format([], dtype = torch.float32, device = 'cpu', pin_memory = False);  empty = None
     add = torch.ops.aten.add.Tensor(inpt_1, inpt_1);  inpt_1 = None
-    view_copy = torch.ops.aten.view_copy.default(add, [4]);  view_copy = None
-    view_copy_1 = torch.ops.aten.view_copy.default(add, [4]);  add = None
-    add_1 = torch.ops.aten.add.Tensor(view_copy_1, 1);  view_copy_1 = None
-    view_copy_2 = torch.ops.aten.view_copy.default(add_1, [4]);  add_1 = None
-    view_copy_3 = torch.ops.aten.view_copy.default(view_copy_2, [4]);  view_copy_3 = None
-    return view_copy_2
+    view_copy = torch.ops.aten.view_copy.default(add, [4]);  add = None
+    add_1 = torch.ops.aten.add.Tensor(view_copy, 1);  view_copy = None
+    view_copy_1 = torch.ops.aten.view_copy.default(add_1, [4]);  add_1 = None
+    return view_copy_1
     """,
         )
 
@@ -4867,7 +4864,6 @@ def forward(self, inpt_1) -> torch.Tensor:
     getitem = aminmax[0]
     getitem_1 = aminmax[1];  aminmax = None
     view_copy_2 = torch.ops.aten.view_copy.default(getitem_1, [2, 2]);  getitem_1 = None
-    view_copy_3 = torch.ops.aten.view_copy.default(view_copy_2, [4]);  view_copy_3 = None
     return (view_copy_2, getitem)
     """,
         )
@@ -4892,7 +4888,6 @@ def forward(self, x_1) -> torch.Tensor:
     view = torch.ops.aten.view.default(x_1, [4, 2])
     add = torch.ops.aten.add.Tensor(view, ones);  view = ones = None
     view_1 = torch.ops.aten.view.default(add, [4, 2]);  add = None
-    view_2 = torch.ops.aten.view.default(view_1, [4, 2]);  view_2 = None
     copy_ = torch.ops.aten.copy_.default(x_1, view_1);  x_1 = copy_ = None
     return view_1
     """,
