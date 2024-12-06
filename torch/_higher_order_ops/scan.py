@@ -43,7 +43,7 @@ def wrap_combine_fn_flat(
     # combined_flat = pytree.tree_leaves(combined)
     # assert num_init_leaves == len(carry_flat)
     # return [*carry_flat, *combined_flat]
-    return carry, combined
+    return [carry, combined]
 
 
 def _extract_carry_and_out(flat_out: List[Any], num_carry: int):
@@ -110,8 +110,8 @@ def scan(
     # The reason we flatten the output before calling into dynamo is that
     # we want to create a consistent input ordering for combine_fn
     # and we also want to the input ordering matches the output ordering.
-    flat_init, spec_init = pytree.tree_flatten(init)
-    flat_xs, spec_xs = pytree.tree_flatten(xs)
+    flat_init, init_spec = pytree.tree_flatten(init)
+    flat_xs, xs_spec = pytree.tree_flatten(xs)
         
     def _validate_input(combine_fn, flat_xs, flat_init, dim):
         if not callable(combine_fn):
@@ -138,7 +138,7 @@ def scan(
             )
                 
         if len(flat_xs) == 0:
-            return pytree.tree_unflatten(flat_init, spec_init), xs
+            return pytree.tree_unflatten(flat_init, init_spec), xs
         
     _validate_input(combine_fn, flat_xs, flat_init, dim)
 
@@ -165,8 +165,8 @@ def scan(
     ndim = len(shape)
     dim = utils.canonicalize_dim(ndim, dim)
 
-    outs = combine_fn(pytree.tree_unflatten(flat_init, spec_init),
-                      pytree.tree_unflatten([elem.select(dim, 0) for elem in flat_xs], spec_xs))
+    # outs = combine_fn(pytree.tree_unflatten(flat_init, spec_init),
+    #                   pytree.tree_unflatten([elem.select(dim, 0) for elem in flat_xs], spec_xs))
 
     #     # The first output needs to have the same pytree as init
     #     carry_leaves = pytree.tree_leaves(outs[0])
@@ -179,7 +179,7 @@ def scan(
     # _check_new_carry_match_init(leaves_init, carry_leaves)
 
     # There are no pytree restrictions on the second output of the operator
-    out_leaves, tree_out = pytree.tree_flatten(outs[1])
+    # out_leaves, tree_out = pytree.tree_flatten(outs[1])
 
     # TODO: Support closures/nn_modules in order to be able represent RNNs with scan
     # TODO: Support _inductor lowering
@@ -190,13 +190,16 @@ def scan(
     combine_fn = functools.partial(
         wrap_combine_fn_flat,
         combine_fn=combine_fn,
-        spec_init=spec_init,
-        spec_xs=spec_xs,
+        spec_init=init_spec,
+        spec_xs=xs_spec,
         num_init_leaves=len(flat_init),
         num_inp_leaves=len(flat_xs),
     )
 
     def run_flattened_scan(combine_fn, leaves_init, leaves_xs, dim, reverse):
+        # print(scan_op)
+        # import pdb
+        # pdb.set_trace()
         return scan_op(
             combine_fn, leaves_init, leaves_xs, dim=dim, reverse=reverse, additional_inputs=[]
         )
@@ -212,8 +215,10 @@ def scan(
                     backend = make_eager_backend_with_torch_function_mode(metadata_mode)
                 else:
                     backend = "eager"
-                result = torch.compile(
-                    run_flattened_scan, backend=backend, fullgraph=True
+                carry, result = torch.compile(
+                # carry_result = torch.compile(
+                    # run_flattened_scan, backend=backend, fullgraph=True
+                    run_flattened_scan, backend=backend, fullgraph=False
                 )(
                     combine_fn,
                     flat_init,
@@ -221,18 +226,36 @@ def scan(
                     dim=dim,
                     reverse=reverse,
                 )
+                # from torch._dynamo.testing import EagerAndRecordGraphs
+                # backend = EagerAndRecordGraphs()
+                # torch.compile(run_flattened_scan, backend=backend)(combine_fn,
+                #     flat_init,
+                #     flat_xs,
+                #     dim=dim,
+                #     reverse=reverse,)
+                # gm = backend.graphs[0]
+            # import pdb
+            # pdb.set_trace()
+            # out, out2 = carry_result
     else:
-        result = run_flattened_scan(combine_fn, flat_init, flat_xs, dim, reverse)
+        carry, result = run_flattened_scan(combine_fn, flat_init, flat_xs, dim, reverse)
         
     # result = run_flattened_scan(combine_fn, flat_init, flat_xs, dim, reverse)
 
-    result_carry, result_flat = _extract_carry_and_out(
-        result,
-        len(flat_init),
-    )
+    # result_carry, result_flat = _extract_carry_and_out(
+    #     result,
+    #     len(flat_init),
+    # )
+    
+    # TODO: Maybe this check is already too late and should be done earlier?
+    # Check the tree specs of the carry and the init
+    if not init_spec.__eq__(pytree.tree_structure(carry)):
+        raise RuntimeError(
+            "The pytree of the carry needs to match the pytree of the init"
+        )
 
-    return pytree.tree_unflatten(result_carry, spec_init), pytree.tree_unflatten(result_flat, tree_out)
-        # result_flat, spec_xs
+    # return pytree.tree_unflatten(result_carry, spec_init), pytree.tree_unflatten(result_flat, tree_out)
+    return carry, result
 
 
 class ScanOp(HigherOrderOperator):
@@ -250,6 +273,19 @@ scan_op = ScanOp()
 
 def generic_scan(operator, init, xs, dim=0, reverse=False, additional_inputs=None):
     additional_inputs = additional_inputs if additional_inputs is not None else []
+
+    def call_operator(init, xs, add):
+        out_tree = operator(
+            *init,
+            *xs,
+            *add,
+        )
+
+        # Flatten the pytree of results
+        return pytree.tree_leaves(out_tree)
+    
+    carry_spec = None
+    out_spec = None
 
     def _scan(init, xs):
         """Perform scan on `elems` using `elems_init."""
@@ -273,6 +309,21 @@ def generic_scan(operator, init, xs, dim=0, reverse=False, additional_inputs=Non
             ),
             num_init_leaves,
         )
+        # dummy_carry_outs_tree = operator(*carry,
+        #                                  *[first_slice_copy(elem, dim) for elem in xs],
+        #                                  *additional_inputs,
+        #                                 )
+        # dummy_carry_tree, dummy_out_tree = dummy_carry_outs_tree[0], dummy_carry_outs_tree[1]
+        
+        # # Flatten the pytree of the carry and the result
+        # dummy_carry, c_spec = pytree.tree_flatten(dummy_carry_tree)
+        # dummy_out, o_spec = pytree.tree_flatten(dummy_out_tree)
+        
+        # nonlocal carry_spec
+        # nonlocal out_spec
+        
+        # carry_spec = c_spec
+        # out_spec = o_spec
 
         # Pre-alocate
         # outs -> Output matrix
@@ -312,14 +363,27 @@ def generic_scan(operator, init, xs, dim=0, reverse=False, additional_inputs=Non
                 ),
                 num_init_leaves,
             )
+            # carry, out = _extract_carry_and_out(
+            #     call_operator(
+            #         carry,
+            #         [elem.select(dim, ind) for elem in xs],
+            #         additional_inputs,
+            #     ),
+            #     num_init_leaves,
+            # )
 
             # Store the inits in the outs matrix.
             store_out_in_outs(out, ind)
 
         return [*carry, *list(outs)]
+        # return carry, outs
 
+    # carry, outs = _scan(init, xs)
     scans = _scan(init, xs)
+    
     return scans
+    # return carry, outs
+    # return pytree.tree_unflatten(carry, carry_spec), pytree.tree_unflatten(outs, out_spec)
 
 
 def first_slice_copy(t: torch.Tensor, dim: int) -> torch.Tensor:

@@ -1253,24 +1253,28 @@ class AssociativeScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             set_subgraph_inputs="flatten_manual",
             should_flatten_outputs=True,
         )
+        
+        # # Flatten the results manually. 
+        # # We do this here so that the operator subgraph returns the pytree results for the Eager mode
+        # combine_result, combine_treespec = _make_inlined(tx, pytree.tree_flatten)(combine_result).items
 
         if combine_lifted_freevars:
             unimplemented(
                 f"Combine fn had unexpected freevars: {combine_lifted_freevars}"
             )
         
-        # TODO: This check for the pointwise function currently fails, as all call_functions are 
-        # categorized as non-pointwise
-        for node in combine_graph.nodes:
-            if node.op == "output":
-                assert outputs is None
-                assert len(node.args) == 1
-                outputs = node.args[0]
+        # # TODO: This check for the pointwise function currently fails, as all call_functions are 
+        # # categorized as non-pointwise
+        # for node in combine_graph.nodes:
+        #     if node.op == "output":
+        #         assert outputs is None
+        #         assert len(node.args) == 1
+        #         outputs = node.args[0]
 
-            if not all(is_pointwise_use(use) or use.op == "output" for use in node.users):
-                unimplemented(
-                    "For combine_mode='pointwise', the combine_fn needs to be pointwise"
-                )
+        #     if not all(is_pointwise_use(use) or use.op == "output" for use in node.users):
+        #         unimplemented(
+        #             "For combine_mode='pointwise', the combine_fn needs to be pointwise"
+        #         )
             
         if len(combine_result.items) != len(xs_seq):
             unimplemented(
@@ -1445,6 +1449,7 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             description="scan_combine_fn",
             source_target=self.value,
             set_subgraph_inputs="flatten_manual",
+            should_flatten_outputs=True,
         )
 
         # key in the combine_lifted_freevars are proxies in the root tracer.
@@ -1464,14 +1469,10 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
         _check_phs_position_match(combine_graph, list(combine_lifted_freevars.values()))
         combine_freevars_proxy = list(combine_lifted_freevars.keys())
 
-        if combine_result.python_type() != list:
-            unimplemented(
-                f"Expected combine_fn to return a list if tensor but got {combine_result.python_type()}",
-            )
+        # # Flatten the results manually
+        # # We do this here so that the operator subgraph returns the pytree results for the Eager mode
+        # combine_result, combine_treespec = _make_inlined(tx, pytree.tree_flatten)(combine_result).items
 
-        # xs_proxy = xs.as_proxy()
-        # init_proxy = init.as_proxy()
-        # additional_inputs_proxy = additional_inputs.as_proxy() + combine_freevars_proxy
         xs_proxy = tuple(x.as_proxy() for x in xs_seq)
         init_proxy = tuple(i.as_proxy() for i in init_seq)
         additional_inputs_proxy = tuple(ai.as_proxy() for ai in additional_inputs_seq) + tuple(combine_freevars_proxy)
@@ -1481,43 +1482,10 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
         carry_vars, out_vars = _extract_carry_and_out(
             combine_result.items, num_init_leaves
         )
-        # carry_proxies = [carry_var.as_proxy() for carry_var in carry_vars]
         out_proxies = [out_var.as_proxy() for out_var in out_vars]
         
-        # Check for the same pytree
-        # same_treespec = _make_inlined(tx, pytree.TreeSpec.__eq__)(
-        #     true_treespec, false_treespec
-        # )
-        # if not same_treespec.as_python_constant():
-        #     unimplemented("Expected branches to return the same pytree structure.")
-        
-        
-        # combine_fn carries checks
-        # combine_carries_meta = [_extract_tensor_metadata(car.proxy.node.meta["example_value"], include_contiguity=False) for car in carry_vars]
-        # init_meta = [_extract_tensor_metadata(i.proxy.node.meta["example_value"], include_contiguity=False) for i in init_seq]
-        # if any(i_meta != combine_car_meta for i_meta, combine_car_meta in zip(init_meta, combine_carries_meta)):
-        #     # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
-        #     unimplemented(
-        #         f"The metadata of the carries of the combine_fn needs to match the meta data of the init pytree"
-        #         f"\n  init metadata          : {[(x.shape, x.dtype, x.stride) for x in init_meta]}"
-        #         f"\n  operator carry metadata: {[(x.shape, x.dtype, x.stride) for x in combine_carries_meta]}"
-        #     )
         check_two_lists_for_same_metadata([car.proxy.node.meta["example_value"] for car in carry_vars],
                                           [i.proxy.node.meta["example_value"] for i in init_seq])
-
-        # # Checks for carry and init
-        # for ini_proxy, carry in zip(init_proxy, carry_proxies):
-        #     ini_meta = ini_proxy.node.meta["example_value"]
-        #     carry_meta = carry.node.meta["example_value"]
-        #     if (
-        #         carry_meta.device != ini_meta.device
-        #         or carry_meta.dtype != ini_meta.dtype
-        #         or carry_meta.shape != ini_meta.shape
-        #     ):
-        #         unimplemented(
-        #             f"Expected metadata of the combine_fn result {carry_meta} to be the same as "
-        #             + f"the metadata of init with {ini_meta}"
-        #         )
 
         combine_gm = torch.fx.GraphModule(dict(tx.output.nn_modules), combine_graph)
         combine_fn_name = add_subgraph(tx, "scan_combine_fn", combine_gm)
@@ -1542,12 +1510,15 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             ]
             out_meta = [*example_carry, *example_stacked_out]
 
-        return wrap_fx_proxy(
-            tx=tx,
-            proxy=tx.output.create_proxy(
-                "call_function", torch.ops.higher_order.scan, p_args, {}
-            ),
-            example_value=out_meta,
+        # return wrap_fx_proxy(
+        #     tx=tx,
+        #     proxy=tx.output.create_proxy(
+        #         "call_function", torch.ops.higher_order.scan, p_args, {}
+        #     ),
+        #     example_value=out_meta,
+        # )
+        return _call_function_and_unflatten_output(
+            tx, torch.ops.higher_order.scan, p_args, {}, out_meta, combine_treespec
         )
 
 

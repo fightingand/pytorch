@@ -313,6 +313,7 @@ def associative_scan(
         result_flat = [torch.flip(elem, [dim]) for elem in result_flat]
         result = pytree.tree_unflatten(result_flat, res_spec)
 
+    # TODO: Maybe this check is already too late and should be done earlier?
     # Check for the same pytree structure
     if not xs_spec.__eq__(pytree.tree_structure(result)):
         raise RuntimeError(
