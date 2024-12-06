@@ -11722,6 +11722,7 @@ class TestThatContainsCUDAAssert(TestCase):
 if __name__ == '__main__':
     run_tests()
         """)
+        print(stderr)
         self.assertIn('CUDA error: device-side assert triggered', stderr)
 
 
