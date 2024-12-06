@@ -1253,10 +1253,6 @@ class AssociativeScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             set_subgraph_inputs="flatten_manual",
             should_flatten_outputs=True,
         )
-        
-        # # Flatten the results manually. 
-        # # We do this here so that the operator subgraph returns the pytree results for the Eager mode
-        # combine_result, combine_treespec = _make_inlined(tx, pytree.tree_flatten)(combine_result).items
 
         if combine_lifted_freevars:
             unimplemented(
@@ -1327,12 +1323,6 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
 
         args, kwargs = LazyVariableTracker.realize_all((args, kwargs))
 
-        # def arg_extractor(combine_fn, init, xs, dim, reverse, additional_inputs):
-        #     return combine_fn, init, xs, dim, reverse, additional_inputs
-
-        # combine_fn, init, xs, dim, reverse, additional_inputs = arg_extractor(
-        #     *args, **kwargs
-        # )
         def arg_extractor(combine_fn, init, xs):
             return combine_fn, init, xs
 
@@ -1385,8 +1375,6 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             )
         xs_seq = xs.unpack_var_sequence(tx)
         
-        # assert isinstance(additional_inputs, variables.BaseListVariable)
-        
         # additional_inputs input check
         if not isinstance(additional_inputs, (ListVariable, TupleVariable)):
             unimplemented(
@@ -1395,17 +1383,6 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
                 f"internal error, please report an issue to PyTorch."
             )
         additional_inputs_seq = additional_inputs.unpack_var_sequence(tx)
-
-        # if xs.python_type() != list:
-        #     unimplemented(
-        #         f"Expected xs to be a list of tensors but got {xs.python_type()}",
-        #     )
-        # assert isinstance(xs, variables.BaseListVariable)
-        # if init.python_type() != list:
-        #     unimplemented(
-        #         f"Expected init to be a list of tensors but got {init.python_type()}",
-        #     )
-        # assert isinstance(init, variables.BaseListVariable)
 
         dim_fake = (
             dim.as_proxy()
@@ -1418,23 +1395,19 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
                 "scan() operator doesn't support zero-sized tensors during tracing."
             )
 
-        # init_len = len(init.items)
-        # if init_len == 0:
-        #     unimplemented("scan() operator requires init leaves.")
-
         # Trace the subgraph
         with discard_graph_changes(tx):
             sub_args_init = [
-                ini.call_method(tx, "clone", args=(), kwargs={}) for ini in init_seq#init.items
+                ini.call_method(tx, "clone", args=(), kwargs={}) for ini in init_seq
             ]
             # The sub_args_inp is a slice of original input, e.g. if input.size is (3, 4), and scan dim=0
             # the sub_args_inp shape will be (4, ).
             sub_args_inp = [
-                _make_inlined(tx, first_slice_copy)(inp, dim) for inp in xs_seq#xs.items
+                _make_inlined(tx, first_slice_copy)(inp, dim) for inp in xs_seq
             ]
             sub_args_additional_inputs = [
                 t.call_method(tx, "clone", args=(), kwargs={})
-                for t in additional_inputs_seq#additional_inputs.items
+                for t in additional_inputs_seq
             ]
         sub_args = sub_args_init + sub_args_inp + sub_args_additional_inputs
         (
@@ -1469,14 +1442,11 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
         _check_phs_position_match(combine_graph, list(combine_lifted_freevars.values()))
         combine_freevars_proxy = list(combine_lifted_freevars.keys())
 
-        # # Flatten the results manually
-        # # We do this here so that the operator subgraph returns the pytree results for the Eager mode
-        # combine_result, combine_treespec = _make_inlined(tx, pytree.tree_flatten)(combine_result).items
-
         xs_proxy = tuple(x.as_proxy() for x in xs_seq)
         init_proxy = tuple(i.as_proxy() for i in init_seq)
         additional_inputs_proxy = tuple(ai.as_proxy() for ai in additional_inputs_seq) + tuple(combine_freevars_proxy)
         num_init_leaves = len(init_proxy)
+        
         # combine_result is a flatten list concated by carry + y, len(carry) is len(init) since they have
         # same pytree structure.
         carry_vars, out_vars = _extract_carry_and_out(
@@ -1510,13 +1480,6 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             ]
             out_meta = [*example_carry, *example_stacked_out]
 
-        # return wrap_fx_proxy(
-        #     tx=tx,
-        #     proxy=tx.output.create_proxy(
-        #         "call_function", torch.ops.higher_order.scan, p_args, {}
-        #     ),
-        #     example_value=out_meta,
-        # )
         return _call_function_and_unflatten_output(
             tx, torch.ops.higher_order.scan, p_args, {}, out_meta, combine_treespec
         )

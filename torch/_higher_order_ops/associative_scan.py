@@ -16,6 +16,7 @@ from torch._higher_order_ops.utils import (
     reenter_make_fx,
     unique_graph_id,
     check_two_lists_for_same_metadata,
+    _maybe_compile_and_run_fn
 )
 from torch._inductor.utils import is_pointwise_use
 from torch._ops import HigherOrderOperator
@@ -287,26 +288,7 @@ def associative_scan(
         else:
             return associative_scan_op(combine_fn, flat_xs, dim=dim)
         
-    if not torch._dynamo.is_compiling():
-        from torch._dynamo.backends.debugging import (
-            make_eager_backend_with_torch_function_mode,
-        )
-
-        with _set_compilation_env(), torch._dynamo.utils.disable_cache_limit():
-            with _temp_remove_metadata_torch_function_mode() as metadata_mode:
-                if metadata_mode:
-                    backend = make_eager_backend_with_torch_function_mode(metadata_mode)
-                else:
-                    backend = "eager"
-                result = torch.compile(
-                    run_flattened_associative_scan, backend=backend, fullgraph=True
-                )(
-                    combine_fn,
-                    flat_xs,
-                    dim=dim
-                )
-    else:
-        result = run_flattened_associative_scan(combine_fn, flat_xs, dim)
+    result = _maybe_compile_and_run_fn(run_flattened_associative_scan, combine_fn, flat_xs, dim)
 
     if reverse:
         result_flat, res_spec = pytree.tree_flatten(result)
