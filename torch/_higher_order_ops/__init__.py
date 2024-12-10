@@ -1,3 +1,8 @@
+from torch._higher_order_ops._invoke_quant import (
+    invoke_quant,
+    invoke_quant_packed,
+    InvokeQuant,
+)
 from torch._higher_order_ops.cond import cond
 from torch._higher_order_ops.flex_attention import (
     flex_attention,
@@ -19,4 +24,7 @@ __all__ = [
     "flex_attention_backward",
     "hints_wrapper",
     "PrimHOPBase",
+    "InvokeQuant",
+    "invoke_quant",
+    "invoke_quant_packed",
 ]
