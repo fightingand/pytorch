@@ -28,18 +28,18 @@ from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
 )
-from torch.testing._internal.inductor_utils import HAS_CPU, HAS_CUDA
+from torch.testing._internal.inductor_utils import HAS_CPU, HAS_TRITON_CUDA
 
 
 torch.set_float32_matmul_precision("high")
-if HAS_CUDA:
+if HAS_TRITON_CUDA:
     torch.cuda.memory._set_allocator_settings("expandable_segments:False")
 
 _CUTLASS_DIR = os.path.join(os.path.dirname(__file__), "../../third_party/cutlass/")
 
 log = logging.getLogger(__name__)
 
-HAS_CUDA = HAS_CUDA and not torch.version.hip
+HAS_TRITON_CUDA = HAS_TRITON_CUDA and not torch.version.hip
 SM75OrLater = SM75OrLater and not torch.version.hip
 SM80OrLater = SM80OrLater and not torch.version.hip
 SM90OrLater = SM90OrLater and not torch.version.hip
@@ -937,5 +937,5 @@ if __name__ == "__main__":
     from torch._inductor.utils import is_big_gpu
 
     # Set env to make it work in CI.
-    if HAS_CUDA and HAS_CPU and is_big_gpu():
+    if HAS_TRITON_CUDA and HAS_CPU and is_big_gpu():
         run_tests()

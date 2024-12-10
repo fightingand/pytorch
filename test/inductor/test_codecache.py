@@ -37,8 +37,8 @@ from torch.testing._internal.common_utils import (
 )
 from torch.testing._internal.inductor_utils import (
     GPU_TYPE,
-    HAS_CUDA,
-    HAS_GPU,
+    HAS_TRITON_CUDA,
+    HAS_TRITON_GPU,
     HAS_MULTIGPU,
     HAS_TRITON,
     requires_gpu,
@@ -100,7 +100,7 @@ class TestFxGraphCache(TestCase):
         """
         Verify that we can populate and load functions from the cache.
         """
-        if device == GPU_TYPE and not HAS_GPU:
+        if device == GPU_TYPE and not HAS_TRITON_GPU:
             raise unittest.SkipTest(f"requires {GPU_TYPE}")
         if device == "cuda" and dtype == torch.bfloat16 and not SM80OrLater:
             raise unittest.SkipTest("requires SM80 or later")
@@ -236,7 +236,7 @@ class TestFxGraphCache(TestCase):
     def test_remote_cache_load_function(self, device, dtype, dynamic, bundle_triton):
         from unittest.mock import patch
 
-        if device == GPU_TYPE and not HAS_GPU:
+        if device == GPU_TYPE and not HAS_TRITON_GPU:
             raise unittest.SkipTest(f"requires {GPU_TYPE}")
         if device == "cuda" and dtype == torch.bfloat16 and not SM80OrLater:
             raise unittest.SkipTest("requires SM80 or later")
@@ -284,7 +284,7 @@ class TestFxGraphCache(TestCase):
         """
         Verify that we can populate and load models from the cache.
         """
-        if device == GPU_TYPE and not HAS_GPU:
+        if device == GPU_TYPE and not HAS_TRITON_GPU:
             raise unittest.SkipTest(f"requires {GPU_TYPE}")
 
         def fn(mod, x):
@@ -324,7 +324,7 @@ class TestFxGraphCache(TestCase):
         Test caching the same graph, but under conditions that introduce guards
         for tensor sizes < int32.
         """
-        if device == GPU_TYPE and not HAS_GPU:
+        if device == GPU_TYPE and not HAS_TRITON_GPU:
             raise unittest.SkipTest(f"requires {GPU_TYPE}")
         if device == "cuda" and dtype == torch.bfloat16 and not SM80OrLater:
             raise unittest.SkipTest("requires CUDA SM80 or later")
@@ -373,7 +373,7 @@ class TestFxGraphCache(TestCase):
         Test caching the same graph, but under conditions that introduce guards
         for static bounds.
         """
-        if device == GPU_TYPE and not HAS_GPU:
+        if device == GPU_TYPE and not HAS_TRITON_GPU:
             raise unittest.SkipTest(f"requires {GPU_TYPE}")
         if device == "cuda" and dtype == torch.bfloat16 and not SM80OrLater:
             raise unittest.SkipTest("requires SM80 or later")
@@ -415,7 +415,7 @@ class TestFxGraphCache(TestCase):
         """
         Test that different constants are recognized correctly.
         """
-        if device == GPU_TYPE and not HAS_GPU:
+        if device == GPU_TYPE and not HAS_TRITON_GPU:
             raise unittest.SkipTest(f"requires {GPU_TYPE}")
 
         def fn1(x):
@@ -804,7 +804,7 @@ class TestFxGraphCache(TestCase):
     @parametrize("device", (GPU_TYPE, "cpu"))
     @parametrize("inlinable", (True, False))
     def test_freezing(self, device, inlinable):
-        if device == GPU_TYPE and not HAS_GPU:
+        if device == GPU_TYPE and not HAS_TRITON_GPU:
             raise unittest.SkipTest(f"requires {GPU_TYPE}")
 
         # For machines with mkldnn_fp16 support, weight_pack in mkldnn_fusion.py causes
@@ -1153,7 +1153,7 @@ class TestFxGraphCacheHashing(TestCase):
 
 
 class TestCudaCompileCommand(TestCase):
-    @unittest.skipIf(not HAS_CUDA, "Requires CUDA")
+    @unittest.skipIf(not HAS_TRITON_CUDA, "Requires CUDA")
     @unittest.skipIf(config.is_fbcode(), "fbcode requires different CUTLASS path setup")
     def test_cuda_compile_command(self):
         cmd_no_extra_args: str = cuda_compile_command(
@@ -1199,7 +1199,7 @@ class TestAutotuneCache(TestCase):
         torch._dynamo.reset()
         clear_inductor_caches()
 
-    @unittest.skipIf(not HAS_CUDA, "Requires CUDA")
+    @unittest.skipIf(not HAS_TRITON_CUDA, "Requires CUDA")
     @unittest.skipIf(not SM80OrLater, "Requires SM80+")
     @config.patch({"fx_graph_cache": False})
     @config.patch({"fx_graph_remote_cache": False})
@@ -1237,7 +1237,7 @@ class TestAutotuneCache(TestCase):
         for k in global_stats.triton.cache.keys():
             self.assertRegex(k, r"triton:[0-9a-f]{64}::[0-9a-f]{64}:c[0-9]+")
 
-    @unittest.skipIf(not HAS_CUDA, "Requires CUDA")
+    @unittest.skipIf(not HAS_TRITON_CUDA, "Requires CUDA")
     @unittest.skipIf(not SM80OrLater, "Requires SM80+")
     @config.patch({"fx_graph_cache": False})
     @config.patch({"fx_graph_remote_cache": False})
@@ -1298,7 +1298,7 @@ class TestAutotuneCache(TestCase):
 
 
 class TestRemoteAOTAutogradCache(TestCase):
-    @unittest.skipIf(not HAS_CUDA, "Requires CUDA")
+    @unittest.skipIf(not HAS_TRITON_CUDA, "Requires CUDA")
     @unittest.skipIf(not SM80OrLater, "Requires SM80+")
     @config.patch({"fx_graph_cache": False})
     @config.patch({"fx_graph_remote_cache": True})
@@ -1337,7 +1337,7 @@ class TestRemoteAOTAutogradCache(TestCase):
         for k in global_stats.fx_graph.cache.keys():
             self.assertRegex(k, r"pt2:fx-graph-v1::[0-9a-z]{52}:c[0-9]+")
 
-    @unittest.skipIf(not HAS_CUDA, "Requires CUDA")
+    @unittest.skipIf(not HAS_TRITON_CUDA, "Requires CUDA")
     @unittest.skipIf(not SM80OrLater, "Requires SM80+")
     @config.patch({"fx_graph_cache": False})
     @config.patch({"fx_graph_remote_cache": True})

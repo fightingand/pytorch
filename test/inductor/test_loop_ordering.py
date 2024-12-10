@@ -18,8 +18,10 @@ from torch._inductor.test_case import run_tests, TestCase
 from torch._inductor.test_operators import realize
 from torch._inductor.utils import sympy_index_symbol
 from torch._inductor.virtualized import ops, V
+
 from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_FP8, xfailIfSM89
-from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU
+from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_TRITON_GPU
+
 from torch.utils._pytree import tree_map
 from torch.utils._sympy.functions import ModularIndexing
 
@@ -27,7 +29,7 @@ from torch.utils._sympy.functions import ModularIndexing
 DO_PERF_TEST = os.environ.get("DO_PERF_TEST") == "1"
 
 
-if HAS_GPU:
+if HAS_TRITON_GPU:
     torch.set_default_device(GPU_TYPE)
 
 
@@ -492,5 +494,5 @@ class LoopOrderingTest(TestCase):
 
 
 if __name__ == "__main__":
-    if HAS_GPU:
+    if HAS_TRITON_GPU:
         run_tests()

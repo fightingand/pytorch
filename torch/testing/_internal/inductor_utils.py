@@ -11,7 +11,6 @@ import sys
 import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncCompile pools
 from torch._inductor.codecache import CppCodeCache
 from torch._inductor.utils import get_gpu_shared_memory, is_big_gpu
-from torch._inductor.utils import GPU_TYPES, get_gpu_type
 from torch.utils._triton import has_triton
 from torch.testing._internal.common_utils import (
     LazyVal,
@@ -21,7 +20,13 @@ from torch.testing._internal.common_utils import (
     TestCase,
     IS_CI,
     IS_WINDOWS,
+    GPU_TYPE,
+    HAS_CUDA,
+    HAS_XPU,
+    HAS_MULTIGPU
 )
+
+from torch._utils import GPU_TYPES, get_gpu_type
 
 log: logging.Logger = logging.getLogger(__name__)
 
@@ -47,19 +52,11 @@ if HAS_TRITON:
 else:
     TRITON_HAS_CPU = False
 
+HAS_TRITON_CUDA = HAS_CUDA and HAS_TRITON
 
-HAS_CUDA = torch.cuda.is_available() and HAS_TRITON
+HAS_TRITON_XPU = HAS_XPU and HAS_TRITON
 
-HAS_XPU = torch.xpu.is_available() and HAS_TRITON
-
-HAS_GPU = HAS_CUDA or HAS_XPU
-
-GPU_TYPE = get_gpu_type()
-
-HAS_MULTIGPU = any(
-    getattr(torch, gpu).is_available() and getattr(torch, gpu).device_count() >= 2
-    for gpu in GPU_TYPES
-)
+HAS_TRITON_GPU = HAS_TRITON_CUDA or HAS_TRITON_XPU
 
 def _check_has_dynamic_shape(
     self: TestCase,
@@ -110,7 +107,7 @@ def skip_windows_ci(name: str, file: str) -> None:
             sys.exit(0)
         raise unittest.SkipTest("requires sympy/functorch/filelock")
 
-requires_gpu = functools.partial(unittest.skipIf, not HAS_GPU, "requires gpu")
+requires_gpu = functools.partial(unittest.skipIf, not HAS_TRITON_GPU, "requires gpu")
 requires_triton = functools.partial(unittest.skipIf, not HAS_TRITON, "requires triton")
 
 skipCUDAIf = functools.partial(skipDeviceIf, device="cuda")
@@ -118,13 +115,13 @@ skipXPUIf = functools.partial(skipDeviceIf, device="xpu")
 skipCPUIf = functools.partial(skipDeviceIf, device="cpu")
 
 IS_A100 = LazyVal(
-    lambda: HAS_CUDA
+    lambda: HAS_TRITON_CUDA
     and get_gpu_shared_memory() == 166912
 )
 
 IS_H100 = LazyVal(
-    lambda: HAS_CUDA
+    lambda: HAS_TRITON_CUDA
     and get_gpu_shared_memory() == 232448
 )
 
-IS_BIG_GPU = LazyVal(lambda: HAS_CUDA and is_big_gpu())
+IS_BIG_GPU = LazyVal(lambda: HAS_TRITON_CUDA and is_big_gpu(0))

@@ -34,7 +34,7 @@ from torch.testing._internal.common_utils import (
     TEST_WITH_ASAN,
     TEST_WITH_ROCM,
 )
-from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_CPU, HAS_GPU
+from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_CPU, HAS_TRITON_GPU
 
 
 # Make the helper files in test/ importable
@@ -100,7 +100,7 @@ if HAS_CPU:
     copy_tests(DynamicShapesCommonTemplate, DynamicShapesCpuTests, "cpu", test_failures)
 
 
-if HAS_GPU and not TEST_WITH_ASAN:
+if HAS_TRITON_GPU and not TEST_WITH_ASAN:
 
     class DynamicShapesGPUTests(TestCase):
         common = check_model_gpu
@@ -117,7 +117,7 @@ class TestInductorDynamic(TestCase):
     def setUp(self):
         # HAS_CUDA also checks compute capability to skip tests
         # on older devices
-        if not HAS_GPU:
+        if not HAS_TRITON_GPU:
             self.skipTest("Triton not available")
         torch._dynamo.reset()
         TestCase.setUp(self)
@@ -1107,5 +1107,5 @@ if __name__ == "__main__":
     from torch._inductor.test_case import run_tests
 
     # Slow on ASAN after https://github.com/pytorch/pytorch/pull/94068
-    if (HAS_CPU or HAS_GPU) and not TEST_WITH_ASAN:
+    if (HAS_CPU or HAS_TRITON_GPU) and not TEST_WITH_ASAN:
         run_tests(needs="filelock")

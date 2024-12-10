@@ -17,7 +17,7 @@ from torch.testing._internal.common_utils import (
 )
 from torch.testing._internal.inductor_utils import (
     GPU_TYPE,
-    HAS_GPU,
+    HAS_TRITON_GPU,
     skip_windows_ci,
     TRITON_HAS_CPU,
 )
@@ -617,5 +617,6 @@ test_torchinductor.copy_tests(CommonTemplate, TritonBlockPointerTestGPU, GPU_TYP
 if __name__ == "__main__":
     from torch._inductor.test_case import run_tests
 
-    if HAS_GPU or TRITON_HAS_CPU:
+
+    if HAS_TRITON_GPU or TRITON_HAS_CPU:
         run_tests(needs="filelock")

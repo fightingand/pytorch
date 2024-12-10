@@ -18,7 +18,7 @@ from torch.testing._internal.common_utils import (
     parametrize,
     skipIfXpu,
 )
-from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU
+from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_TRITON_GPU
 
 
 class TransformerSnippet(nn.Module):
@@ -299,5 +299,5 @@ class MultiKernelTest(TestCase):
 if __name__ == "__main__":
     from torch._inductor.test_case import run_tests
 
-    if HAS_GPU:
+    if HAS_TRITON_GPU:
         run_tests()

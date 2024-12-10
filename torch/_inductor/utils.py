@@ -56,19 +56,6 @@ if TYPE_CHECKING:
 from torch.utils._pytree import tree_map_only
 
 
-GPU_TYPES = ["cuda", "xpu"]
-
-
-# defines here before import torch._dynamo is for avoiding circular import
-# when get_gpu_type is imported from dynamo
-@functools.lru_cache(None)
-def get_gpu_type():
-    avail_gpus = [x for x in GPU_TYPES if getattr(torch, x).is_available()]
-    assert len(avail_gpus) <= 1
-    gpu_type = "cuda" if len(avail_gpus) == 0 else avail_gpus.pop()
-    return gpu_type
-
-
 from torch._dynamo.device_interface import get_interface_for_device
 from torch._dynamo.utils import detect_fake_mode
 from torch.autograd import DeviceType
@@ -87,7 +74,7 @@ from torch.utils._sympy.value_ranges import bound_sympy, ValueRanges
 
 from . import config
 from .runtime.runtime_utils import ceildiv as runtime_ceildiv
-
+from torch._utils import GPU_TYPES, get_gpu_type
 
 _IS_WINDOWS = sys.platform == "win32"
 
