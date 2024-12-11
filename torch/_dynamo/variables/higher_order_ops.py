@@ -1288,63 +1288,97 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
         args: List[VariableTracker],
         kwargs: Dict[str, VariableTracker],
     ) -> VariableTracker:
-        from torch._higher_order_ops.scan import (
-            _extract_carry_and_out,
-            first_slice_copy,
-            stack_y,
-        )
-
-        from .builder import wrap_fx_proxy
+        from torch._higher_order_ops.scan import first_slice_copy, stack_y
+        from torch._higher_order_ops.utils import check_two_lists_for_same_metadata
 
         args, kwargs = LazyVariableTracker.realize_all((args, kwargs))
 
-        def arg_extractor(combine_fn, init, xs, dim, reverse, additional_inputs):
-            return combine_fn, init, xs, dim, reverse, additional_inputs
+        def arg_extractor(combine_fn, init, xs):
+            return combine_fn, init, xs
 
-        combine_fn, init, xs, dim, reverse, additional_inputs = arg_extractor(
-            *args, **kwargs
+        combine_fn, init, xs = arg_extractor(*args)
+
+        if len(args) != 3:
+            unimplemented(
+                f"Expected 3 positional arguments but got {len(args)}.\n"
+                f"Usage: scan(combine_fn, init, xs)",
+            )
+
+        # Input checks
+        for i, k in enumerate(
+            ["combine_fn", "init", "xs", "dim", "reverse", "additional_inputs"]
+        ):
+            if v := kwargs.pop(k, None):
+                assert i == len(
+                    args
+                ), "did not provide the right number of non-keyword args"
+                args.append(v)
+
+        # Collect the special arguments
+        dim = args[-3]
+        reverse = args[-2]
+        additional_inputs = args[-1]
+
+        # In dynamo we only expect the `dim` kwarg, the others are handled in the user-facing API.
+        if len(kwargs) != 0:
+            unimplemented(f"scan: Got unexpected kwargs: {list(kwargs.keys())}")
+
+        # combine_fn input check
+        # We need to get the pure combine_fn from the functools.partial
+        _check_supported_callable_arg(
+            tx, combine_fn.keywords["combine_fn"], "combine_fn"
         )
-        assert isinstance(additional_inputs, variables.BaseListVariable)
 
-        if xs.python_type() != list:
+        # init input check
+        if not isinstance(init, (ListVariable, TupleVariable)) and len(init.items) > 0:
             unimplemented(
-                f"Expected xs to be a list of tensors but got {xs.python_type()}",
+                f"Expected init to be a list/tuple with at least one element but got "
+                f"{init.python_type()}. It seems to be an "
+                f"internal error, please report an issue to PyTorch."
             )
-        assert isinstance(xs, variables.BaseListVariable)
-        if init.python_type() != list:
+        init_seq = init.unpack_var_sequence(tx)
+
+        # xs input check
+        if not isinstance(xs, (ListVariable, TupleVariable)):
             unimplemented(
-                f"Expected init to be a list of tensors but got {init.python_type()}",
+                f"Expected additional_inputs to be a list/tuple but got "
+                f"{xs.python_type()}. It seems to be an "
+                f"internal error, please report an issue to PyTorch."
             )
-        assert isinstance(init, variables.BaseListVariable)
+        xs_seq = xs.unpack_var_sequence(tx)
+
+        # additional_inputs input check
+        if not isinstance(additional_inputs, (ListVariable, TupleVariable)):
+            unimplemented(
+                f"Expected additional_inputs to be a list/tuple but got "
+                f"{additional_inputs.python_type()}. It seems to be an "
+                f"internal error, please report an issue to PyTorch."
+            )
+        additional_inputs_seq = additional_inputs.unpack_var_sequence(tx)
 
         dim_fake = (
             dim.as_proxy()
             if type(dim.as_proxy()) == int
             else get_fake_value(dim.as_proxy().node, tx)
         )
-        scan_length = get_fake_value(xs.items[0].as_proxy().node, tx).size()[dim_fake]
-        if scan_length == 0:
-            unimplemented(
-                "scan() operator doesn't support zero-sized tensors during tracing."
-            )
 
-        init_len = len(init.items)
-        if init_len == 0:
-            unimplemented("scan() operator requires init leaves.")
+        scan_length = get_fake_value(xs_seq[0].as_proxy().node, tx).size()[dim_fake]
+        if scan_length == 0:
+            unimplemented("scan() doesn't support zero-sized tensors during tracing.")
 
         # Trace the subgraph
         with discard_graph_changes(tx):
             sub_args_init = [
-                ini.call_method(tx, "clone", args=(), kwargs={}) for ini in init.items
+                ini.call_method(tx, "clone", args=(), kwargs={}) for ini in init_seq
             ]
             # The sub_args_inp is a slice of original input, e.g. if input.size is (3, 4), and scan dim=0
             # the sub_args_inp shape will be (4, ).
             sub_args_inp = [
-                _make_inlined(tx, first_slice_copy)(inp, dim) for inp in xs.items
+                _make_inlined(tx, first_slice_copy)(inp, dim) for inp in xs_seq
             ]
             sub_args_additional_inputs = [
                 t.call_method(tx, "clone", args=(), kwargs={})
-                for t in additional_inputs.items
+                for t in additional_inputs_seq
             ]
         sub_args = sub_args_init + sub_args_inp + sub_args_additional_inputs
         (
@@ -1378,36 +1412,34 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
         _check_phs_position_match(combine_graph, list(combine_lifted_freevars.values()))
         combine_freevars_proxy = list(combine_lifted_freevars.keys())
 
-        if combine_result.python_type() != list:
-            unimplemented(
-                f"Expected combine_fn to return a list if tensor but got {combine_result.python_type()}",
-            )
+        xs_proxy = tuple(x.as_proxy() for x in xs_seq)
+        init_proxy = tuple(i.as_proxy() for i in init_seq)
+        # additional_inputs_proxy = tuple(ai.as_proxy() for ai in additional_inputs_seq) + tuple(combine_freevars_proxy)
+        additional_inputs_proxy = list(
+            ai.as_proxy() for ai in additional_inputs_seq
+        ) + list(combine_freevars_proxy)
 
-        xs_proxy = xs.as_proxy()
-        init_proxy = init.as_proxy()
-        additional_inputs_proxy = additional_inputs.as_proxy() + combine_freevars_proxy
-        num_init_leaves = len(init_proxy)
-        # combine_result is a flatten list concated by carry + y, len(carry) is len(init) since they have
-        # same pytree structure.
-        carry_vars, y_vars = _extract_carry_and_out(
-            combine_result.items, num_init_leaves
+        # Flatten manually and get the tree_spec.
+        # We need to do it this way, as if speculate_subgraph already returns the flattened output
+        # we may run into issues that we actually mistake an output for a carry.
+        # E.g., consider that the combine_fn returns two leaves.
+        # One of them is supposed to be the carry and one the output, but we may confuse the output for
+        # an additional carry.
+        carry_vars_tree, out_vars_tree = combine_result.unpack_var_sequence(tx)
+        combine_treespec = _make_inlined(tx, pytree.tree_structure)(combine_result)
+        carry_vars = _make_inlined(tx, pytree.tree_leaves)(
+            carry_vars_tree
+        ).unpack_var_sequence(tx)
+        out_vars = _make_inlined(tx, pytree.tree_leaves)(
+            out_vars_tree
+        ).unpack_var_sequence(tx)
+        out_proxies = [out_var.as_proxy() for out_var in out_vars]
+
+        # Check whether the flattened carries and the init have the same meta data
+        check_two_lists_for_same_metadata(
+            [car.proxy.node.meta["example_value"] for car in carry_vars],
+            [i.proxy.node.meta["example_value"] for i in init_seq],
         )
-        carry_proxies = [carry_var.as_proxy() for carry_var in carry_vars]
-        y_proxies = [y_var.as_proxy() for y_var in y_vars]
-
-        # Checks for carry and init
-        for ini_proxy, carry in zip(init_proxy, carry_proxies):
-            ini_meta = ini_proxy.node.meta["example_value"]
-            carry_meta = carry.node.meta["example_value"]
-            if (
-                carry_meta.device != ini_meta.device
-                or carry_meta.dtype != ini_meta.dtype
-                or carry_meta.shape != ini_meta.shape
-            ):
-                unimplemented(
-                    f"Expected metadata of the combine_fn result {carry_meta} to be the same as "
-                    + f"the metadata of init with {ini_meta}"
-                )
 
         combine_gm = torch.fx.GraphModule(dict(tx.output.nn_modules), combine_graph)
         combine_fn_name = add_subgraph(tx, "scan_combine_fn", combine_gm)
@@ -1421,23 +1453,21 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             additional_inputs_proxy,
         )
 
-        with tx.fake_mode:
+        with tx.output.fake_mode:
             example_carry = [
                 init_p.node.meta["example_value"].clone() for init_p in init_proxy
             ]
+
             # For the fake mode, we need to duplicate the init tensor along the dim
             # to have the same size as the xs arguments
-            example_stacked_out = [
-                stack_y(y.node.meta["example_value"], scan_length) for y in y_proxies
+            example_out = [
+                stack_y(y.node.meta["example_value"], scan_length) for y in out_proxies
             ]
-            out_meta = [*example_carry, *example_stacked_out]
 
-        return wrap_fx_proxy(
-            tx=tx,
-            proxy=tx.output.create_proxy(
-                "call_function", torch.ops.higher_order.scan, p_args, {}
-            ),
-            example_value=out_meta,
+            out_meta = [*example_carry, *example_out]
+
+        return _call_function_and_unflatten_output(
+            tx, torch.ops.higher_order.scan, p_args, {}, out_meta, combine_treespec
         )
 
 

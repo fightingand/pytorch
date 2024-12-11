@@ -1637,11 +1637,10 @@ def forward(self, pred_1, x_1):
         init = pytree.tree_unflatten(init_flat, inp_spec)
 
         with self.assertRaisesRegex(
-            # Should be: RuntimeError,
-            # r"The number of leaves of the pytree of the new carry produced by
-            # the operator needs to match the length of the pytree of the init",
-            RuntimeError,
-            "The number of leaves of the pytree of the new carry",
+            # Should be: Unsupported,
+            # r"HigherOrderOperator body's output must consist of tensors only",
+            torch._dynamo.exc.UncapturedHigherOrderOpError,
+            ".*",
         ):
             result = scan(fct_wrong_pytree, init, inp, dim=0)
 
@@ -1962,6 +1961,7 @@ def forward(self, pred_1, x_1):
         scan_fct = compile_mode_helper(scan, compile_mode)
 
         # Only init and no input
+        # Only init and no input
         x = torch.randn(3, 1, 2)
         init = torch.randn(3, 2)
         dim = 1
@@ -1972,7 +1972,7 @@ def forward(self, pred_1, x_1):
         if compile_mode == "none":
             with self.assertRaisesRegex(
                 RuntimeError,
-                "xs leaves must have a scan dimension > 0",
+                "The scan dimension of all elements of xs must be > 0",
             ):
                 result_init = scan_fct(
                     get_scan_combine_fn("add", False),
@@ -2005,8 +2005,8 @@ def forward(self, pred_1, x_1):
         init = 1.0
         if compile_mode == "none":
             with self.assertRaisesRegex(
-                RuntimeError,
-                "All init leaves must be a Tensor",
+                AssertionError,
+                ".*can only be of.*",
             ):
                 result_init = scan_fct(
                     get_scan_combine_fn("add", False), init, x, dim=dim
@@ -2023,6 +2023,35 @@ def forward(self, pred_1, x_1):
 
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager"])
+    def test_scan_init_too_few_leaves(self, compile_mode):
+        scan_fct = compile_mode_helper(scan, compile_mode)
+
+        def fct(x, y):
+            return x[0], (x[1], y)
+
+        x = torch.randn(3, 1, 2)
+        dim = 1
+
+        # Init is a float and not a tensor
+        init = (torch.randn(3, 1, 2), torch.randn(3, 1, 2))
+        # if compile_mode == "none":
+        #     # with self.assertRaisesRegex(
+        #     #     AssertionError,
+        #     #     ".*can only be of.*",
+        #     # ):
+        #     result_init = scan_fct(
+        #         fct, init, x, dim=dim
+        #     )
+        # else:
+        with self.assertRaisesRegex(
+            # Should be: RuntimeError, "Init leaves must be a Tensor"
+            torch._dynamo.exc.Unsupported,
+            "Observed exception.*",
+        ):
+            result_init = scan_fct(fct, init, x, dim=dim)
+
+    @requires_cuda
+    @parametrize("compile_mode", ["none", "eager"])
     def test_scan_init_wrong_shape(self, compile_mode):
         scan_fct = compile_mode_helper(scan, compile_mode)
 
@@ -2033,7 +2062,10 @@ def forward(self, pred_1, x_1):
         # Init wrong shape (Other dim different)
         init = torch.randn(1, 2)
         if compile_mode == "none":
-            with self.assertRaisesRegex(RuntimeError, "The shape of the new_carry"):
+            with self.assertRaisesRegex(
+                AssertionError,
+                "The metadata of leaves_a needs to match the metadata of leaves_b.*",
+            ):
                 result_init = scan_fct(
                     get_scan_combine_fn("add", False),
                     init,
@@ -2042,9 +2074,8 @@ def forward(self, pred_1, x_1):
                 )
         else:
             with self.assertRaisesRegex(
-                # Should be: RuntimeError, "The size of tensor a.*"
-                torch._dynamo.exc.Unsupported,
-                "Observed exception.*",
+                AssertionError,
+                "The metadata of leaves_a needs to match the metadata of leaves_b.*",
             ):
                 result_init = scan_fct(
                     get_scan_combine_fn("add", False),
@@ -2061,8 +2092,7 @@ def forward(self, pred_1, x_1):
 
         scan_fct = compile_mode_helper(scan, compile_mode)
 
-        # Only init and no input
-        x = torch.randn(3, 1, 2)
+        x = torch.randn(3, 2, 2)
         dim = 1
 
         # Init wrong pytree
@@ -2073,17 +2103,15 @@ def forward(self, pred_1, x_1):
 
         if compile_mode == "none":
             with self.assertRaisesRegex(
-                RuntimeError,
-                "The number of leaves of the pytree of the new carry produced by the operator",
+                AssertionError,
+                "The metadata of leaves_a needs to match the metadata of leaves_b.*",
             ):
                 result_init = scan_fct(add_one_carry, init, x, dim=dim)
 
         else:
             with self.assertRaisesRegex(
-                # Should be: RuntimeError: The number of leaves of the pytree of the new carry produced
-                # by the operator needs to match the length of the pytree of the init
-                torch._dynamo.exc.Unsupported,
-                "Observed exception.*",
+                AssertionError,
+                "The metadata of leaves_a needs to match the metadata of leaves_b.*",
             ):
                 result_init = scan_fct(add_one_carry, init, x, dim=dim)
 
@@ -2393,11 +2421,8 @@ def forward(self, pred_1, x_1):
 
         # Wrong dtype
         with self.assertRaisesRegex(
-            # Should be: RuntimeError: Expected the init and
-            # the new carry produced by the operator to be a tensor of
-            # torch.int64 but got torch.float32 and torch.int64
-            RuntimeError,
-            "The dtype of the new_carry",
+            AssertionError,
+            "The metadata of leaves_a needs to match the metadata of leaves_b.*",
         ):
             f(add_wrong_dtype, init, x)
 
@@ -2420,15 +2445,12 @@ def forward(self, pred_1, x_1):
             gm.code.strip(),
             """\
 def forward(self, fct_1, init_1, xs_1):
-    select = torch.ops.aten.select.int(xs_1, 0, 0)
-    add = torch.ops.aten.add.Tensor(init_1, select);  add = None
-    add_1 = torch.ops.aten.add.Tensor(init_1, select);  select = add_1 = None
     sym_size_int_1 = torch.ops.aten.sym_size.int(init_1, 1)
     sym_size_int_2 = torch.ops.aten.sym_size.int(init_1, 2)
     sym_size_int_3 = torch.ops.aten.sym_size.int(xs_1, 1)
     sym_size_int_4 = torch.ops.aten.sym_size.int(xs_1, 2)
     scan_combine_graph_0 = self.scan_combine_graph_0
-    scan = torch.ops.higher_order.scan(scan_combine_graph_0, [init_1], [xs_1], 0, True, [sym_size_int_1, sym_size_int_2, sym_size_int_3, sym_size_int_4]);  scan_combine_graph_0 = init_1 = xs_1 = sym_size_int_1 = sym_size_int_2 = sym_size_int_3 = sym_size_int_4 = None
+    scan = torch.ops.higher_order.scan(scan_combine_graph_0, (init_1,), (xs_1,), 0, True, [sym_size_int_1, sym_size_int_2, sym_size_int_3, sym_size_int_4]);  scan_combine_graph_0 = init_1 = xs_1 = sym_size_int_1 = sym_size_int_2 = sym_size_int_3 = sym_size_int_4 = None
     getitem = scan[0]
     getitem_1 = scan[1];  scan = None
     return (getitem, getitem_1)""",  # noqa: B950
@@ -2445,14 +2467,11 @@ def forward(self, fct_1, init_1, xs_1):
 def forward(self, L_init_ : torch.Tensor, L_xs_ : torch.Tensor):
     l_init_ = L_init_
     l_xs_ = L_xs_
-    select = l_xs_.select(0, 0)
-    new_carry = l_init_ + select;  new_carry = None
-    add_1 = l_init_ + select;  select = add_1 = None
     scan_combine_fn_0 = self.scan_combine_fn_0
-    scan = torch.ops.higher_order.scan(scan_combine_fn_0, [l_init_], [l_xs_], 0, True, []);  scan_combine_fn_0 = l_init_ = l_xs_ = None
-    getitem = scan[0]
-    getitem_1 = scan[1];  scan = None
-    return (getitem, getitem_1)""",  # noqa: B950
+    scan = torch.ops.higher_order.scan(scan_combine_fn_0, (l_init_,), (l_xs_,), 0, True, []);  scan_combine_fn_0 = l_init_ = l_xs_ = None
+    carry = scan[0]
+    result = scan[1];  scan = None
+    return (carry, result)""",  # noqa: B950
         )
 
 

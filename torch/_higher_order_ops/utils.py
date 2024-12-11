@@ -8,7 +8,11 @@ import torch
 import torch.fx.traceback as fx_traceback
 import torch.utils._pytree as pytree
 from torch._ops import OperatorBase
-from torch.fx.experimental.proxy_tensor import make_fx
+from torch.fx.experimental.proxy_tensor import (
+    _temp_remove_metadata_torch_function_mode,
+    make_fx,
+)
+from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from torch.multiprocessing.reductions import StorageWeakRef
 
 
@@ -76,6 +80,23 @@ def _maybe_run_with_interpreter(fn):
 
         maybe_interpreted_fn = graph_with_interpreter
     return maybe_interpreted_fn
+
+
+def _maybe_compile_and_run_fn(fn, *args):
+    if not torch._dynamo.is_compiling():
+        from torch._dynamo.backends.debugging import (
+            make_eager_backend_with_torch_function_mode,
+        )
+
+        with _set_compilation_env(), torch._dynamo.utils.disable_cache_limit():
+            with _temp_remove_metadata_torch_function_mode() as metadata_mode:
+                if metadata_mode:
+                    backend = make_eager_backend_with_torch_function_mode(metadata_mode)
+                else:
+                    backend = "eager"
+                return torch.compile(fn, backend=backend, fullgraph=False)(*args)
+    else:
+        return fn(*args)
 
 
 def reenter_make_fx(fn):
@@ -493,5 +514,27 @@ def first_slice_copy(t: torch.Tensor, dim: int = 0) -> torch.Tensor:
 def validate_subgraph_args_types(lifted_args: Union[Tuple[Any, ...], List[Any]]):
     allowed_types = (torch.Tensor, int, torch.SymInt)
     assert all(
-        isinstance(arg, (torch.Tensor, int, torch.SymInt)) for arg in lifted_args
+        isinstance(arg, allowed_types) for arg in lifted_args
     ), f"{lifted_args} can only be of {allowed_types} but got {tuple(type(arg) for arg in lifted_args)}"
+
+
+# Check the meta data of two flattened lists of leaves.
+# This function is for example useful if the input and the output of a combine_fn are required to have the same
+# meta data
+def check_two_lists_for_same_metadata(leaves_a, leaves_b):
+    # This is a workaround since the device is not a property of TensorMetadata
+    la_tensor_metadata = [
+        (_extract_tensor_metadata(la, include_contiguity=False), la.device)
+        for la in leaves_a
+    ]
+    lb_tensor_metadata = [
+        (_extract_tensor_metadata(lb, include_contiguity=False), lb.device)
+        for lb in leaves_b
+    ]
+
+    # TODO: The TensorMetadata does not contain the device property and hence this is not checked!
+    assert all(la == lb for la, lb in zip(la_tensor_metadata, lb_tensor_metadata)), (
+        f"The metadata of leaves_a needs to match the metadata of leaves_b"
+        f"\n  leaves_a metadata             : {[(x[0].shape, x[0].dtype, x[0].stride, x[1]) for x in la_tensor_metadata]}"
+        f"\n  leaves_b metadata             : {[(x[0].shape, x[0].dtype, x[0].stride, x[1]) for x in lb_tensor_metadata]}"
+    )

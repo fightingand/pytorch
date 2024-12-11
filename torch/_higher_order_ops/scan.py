@@ -11,7 +11,7 @@ from torch._C import DispatchKey
 from torch._higher_order_ops.utils import (
     _has_potential_branch_input_alias,
     _has_potential_branch_input_mutation,
-    _set_compilation_env,
+    _maybe_compile_and_run_fn,
     autograd_not_implemented,
     reenter_make_fx,
     unique_graph_id,
@@ -21,7 +21,6 @@ from torch._higher_order_ops.utils import (
 from torch._ops import HigherOrderOperator
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.fx.experimental.proxy_tensor import (
-    _temp_remove_metadata_torch_function_mode,
     disable_proxy_modes_tracing,
     ProxyTorchDispatchMode,
     track_tensor_tree,
@@ -38,11 +37,9 @@ def wrap_combine_fn_flat(
     assert len(args) == (num_init_leaves + num_inp_leaves)
     carry = pytree.tree_unflatten(args[:num_init_leaves], spec_init)
     xs = pytree.tree_unflatten(args[num_init_leaves:], spec_xs)
-    carry, combined = combine_fn(carry, xs)
-    carry_flat = pytree.tree_leaves(carry)
-    combined_flat = pytree.tree_leaves(combined)
-    assert num_init_leaves == len(carry_flat)
-    return [*carry_flat, *combined_flat]
+    return combine_fn(carry, xs)
+    # carry, combined = combine_fn(carry, xs)
+    # return [carry, combined]
 
 
 def _extract_carry_and_out(flat_out: List[Any], num_carry: int):
@@ -105,72 +102,48 @@ def scan(
 
 
     """
-    if not callable(combine_fn):
-        raise RuntimeError("Combine_fn must be a callable, but got {combine_fn}")
-    if not isinstance(dim, int):
-        raise RuntimeError("Dim must be an int, but got " + str(type(dim)))
-    if not isinstance(reverse, bool):
-        raise RuntimeError("Reverse must be a bool, but got " + str(type(reverse)))
 
-    leaves_init, spec_init = pytree.tree_flatten(init)
-    leaves_xs, spec_xs = pytree.tree_flatten(xs)
+    # The reason we flatten the output before calling into dynamo is that
+    # we want to create a consistent input ordering for combine_fn
+    # and we also want to the input ordering matches the output ordering.
+    flat_init, init_spec = pytree.tree_flatten(init)
+    flat_xs, xs_spec = pytree.tree_flatten(xs)
 
-    if len(leaves_init) == 0:
-        raise RuntimeError("Init tensors must be provided")
-    for x in leaves_init:
-        if not isinstance(x, torch.Tensor):
-            raise RuntimeError(f"All init leaves must be a Tensor but got {x}")
-    for x in leaves_xs:
-        if not isinstance(x, torch.Tensor):
-            raise RuntimeError(f"All xs leaves must be a Tensor but got {x}")
-        if x.shape[dim] == 0:
+    # Shortcut if no xs is provided
+    if len(flat_xs) == 0:
+        return init, []
+
+    def _validate_input(combine_fn, flat_xs, flat_init, dim):
+        if not callable(combine_fn):
+            raise RuntimeError("Combine_fn must be a callable, but got {combine_fn}")
+        if not isinstance(dim, int):
+            raise RuntimeError("Dim must be an int, but got " + str(type(dim)))
+        if not isinstance(reverse, bool):
+            raise RuntimeError("Reverse must be a bool, but got " + str(type(reverse)))
+
+        # # Check flat_xs and flat_init for type
+        validate_subgraph_args_types(flat_xs)
+        validate_subgraph_args_types(flat_init)
+
+        if len(flat_init) == 0:
+            raise RuntimeError("Init tensors must be provided")
+
+        if any(x.ndim < dim for x in flat_xs):
             raise RuntimeError(
-                f"All xs leaves must have a scan dimension > 0 but got {x}"
+                "All elements of xs must at least have 'dim' number of dimensions"
             )
+        if any(x.shape[dim] == 0 for x in flat_xs):
+            raise RuntimeError("The scan dimension of all elements of xs must be > 0")
 
-    if len(leaves_xs) == 0:
-        return pytree.tree_unflatten(leaves_init, spec_init), xs
+        if len(flat_xs) == 0:
+            return pytree.tree_unflatten(flat_init, init_spec), xs
 
-    shape = leaves_xs[0].shape
+    _validate_input(combine_fn, flat_xs, flat_init, dim)
+
+    # Canonicalize the dim
+    shape = flat_xs[0].shape
     ndim = len(shape)
     dim = utils.canonicalize_dim(ndim, dim)
-
-    out = combine_fn(
-        pytree.tree_unflatten(leaves_init, spec_init),
-        pytree.tree_unflatten([elem.select(dim, 0) for elem in leaves_xs], spec_xs),
-    )
-
-    # The first output needs to have the same pytree as init
-    carry_leaves = pytree.tree_leaves(out[0])
-    if len(carry_leaves) != len(leaves_init):
-        raise RuntimeError(
-            f"The number of leaves of the pytree of the new carry produced by the operator is {len(carry_leaves)}\
-doesn't match the length of the pytree of the init {len(leaves_init)}"
-        )
-
-    def _check_new_carry_match_init(leaves_init, carry_leaves):
-        for i, (init, new_carry) in enumerate(zip(leaves_init, carry_leaves)):
-            if init.shape != new_carry.shape:
-                raise RuntimeError(
-                    f"The shape of the new_carry[{i}] {new_carry.shape} doesn't match that of the init[{i}] {init.shape}."
-                )
-            if init.stride() != new_carry.stride():
-                raise RuntimeError(
-                    f"The stride of the new_carry[{i}] {new_carry.stride()} doesn't match that of the init[{i}] {init.stride()}."
-                )
-            if init.dtype != new_carry.dtype:
-                raise RuntimeError(
-                    f"The dtype of the new_carry[{i}] {new_carry.dtype} doesn't match that of the init[{i}] {init.dtype}."
-                )
-            if init.requires_grad != new_carry.requires_grad:
-                raise RuntimeError(
-                    f"The requires_grad of the new_carry[{i}] {new_carry.requires_grad} doesn't match that of the init[{i}] {init.requires_grad}."  # noqa: B950
-                )
-
-    _check_new_carry_match_init(leaves_init, carry_leaves)
-
-    # There are no pytree restrictions on the second output of the operator
-    out_leaves, tree_out = pytree.tree_flatten(out[1])
 
     # TODO: Support closures/nn_modules in order to be able represent RNNs with scan
     # TODO: Support _inductor lowering
@@ -181,48 +154,34 @@ doesn't match the length of the pytree of the init {len(leaves_init)}"
     combine_fn = functools.partial(
         wrap_combine_fn_flat,
         combine_fn=combine_fn,
-        spec_init=spec_init,
-        spec_xs=spec_xs,
-        num_init_leaves=len(leaves_init),
-        num_inp_leaves=len(leaves_xs),
+        spec_init=init_spec,
+        spec_xs=xs_spec,
+        num_init_leaves=len(flat_init),
+        num_inp_leaves=len(flat_xs),
     )
 
     def run_flattened_scan(combine_fn, leaves_init, leaves_xs, dim, reverse):
         return scan_op(
-            combine_fn, leaves_init, leaves_xs, dim, reverse, additional_inputs=[]
+            combine_fn,
+            leaves_init,
+            leaves_xs,
+            dim=dim,
+            reverse=reverse,
+            additional_inputs=[],
         )
 
-    if not torch._dynamo.is_compiling():
-        from torch._dynamo.backends.debugging import (
-            make_eager_backend_with_torch_function_mode,
+    carry, result = _maybe_compile_and_run_fn(
+        run_flattened_scan, combine_fn, flat_init, flat_xs, dim, reverse
+    )
+
+    # TODO: Maybe this check is already too late and should be done earlier?
+    # Check the tree specs of the carry and the init
+    if not init_spec == pytree.tree_structure(carry):
+        raise RuntimeError(
+            "The pytree of the carry needs to match the pytree of the init"
         )
 
-        with _set_compilation_env(), torch._dynamo.utils.disable_cache_limit():
-            with _temp_remove_metadata_torch_function_mode() as metadata_mode:
-                if metadata_mode:
-                    backend = make_eager_backend_with_torch_function_mode(metadata_mode)
-                else:
-                    backend = "eager"
-                result = torch.compile(
-                    run_flattened_scan, backend=backend, fullgraph=True
-                )(
-                    combine_fn,
-                    leaves_init,
-                    leaves_xs,
-                    dim=dim,
-                    reverse=reverse,
-                )
-    else:
-        result = run_flattened_scan(combine_fn, leaves_init, leaves_xs, dim, reverse)
-
-    result_carry, result_flat = _extract_carry_and_out(
-        result,
-        len(leaves_init),
-    )
-
-    return pytree.tree_unflatten(result_carry, spec_init), pytree.tree_unflatten(
-        result_flat, tree_out
-    )
+    return carry, result
 
 
 class ScanOp(HigherOrderOperator):
@@ -241,6 +200,9 @@ scan_op = ScanOp()
 def generic_scan(operator, init, xs, dim=0, reverse=False, additional_inputs=None):
     additional_inputs = additional_inputs if additional_inputs is not None else []
 
+    def call_operator(*args):
+        return pytree.tree_leaves(operator(*args))
+
     def _scan(init, xs):
         """Perform scan on `elems` using `elems_init."""
         carry = init
@@ -256,7 +218,8 @@ def generic_scan(operator, init, xs, dim=0, reverse=False, additional_inputs=Non
         # Compute dummy shapes for the pre-allocation
         num_init_leaves = len(init)
         dummy_carry, dummy_out = _extract_carry_and_out(
-            operator(
+            # operator(
+            call_operator(
                 *carry,
                 *[first_slice_copy(elem, dim) for elem in xs],
                 *additional_inputs,
@@ -295,7 +258,8 @@ def generic_scan(operator, init, xs, dim=0, reverse=False, additional_inputs=Non
         for i in range(num_elems):
             ind = i if not reverse else num_elems - i - 1
             carry, out = _extract_carry_and_out(
-                operator(
+                # operator(
+                call_operator(
                     *carry,
                     *[elem.select(dim, ind) for elem in xs],
                     *additional_inputs,
@@ -309,6 +273,7 @@ def generic_scan(operator, init, xs, dim=0, reverse=False, additional_inputs=Non
         return [*carry, *list(outs)]
 
     scans = _scan(init, xs)
+
     return scans
 
 
@@ -470,9 +435,9 @@ def scan_functionalize(ctx, combine_fn, init, xs, dim, reverse, additional_input
             functional_combine_fn,
             unwrapped_init,
             unwrapped_xs,
-            dim,
-            reverse,
-            unwrapped_additional_inputs,
+            dim=dim,
+            reverse=reverse,
+            additional_inputs=unwrapped_additional_inputs,
         )
     return ctx.wrap_tensors(ret)
 
