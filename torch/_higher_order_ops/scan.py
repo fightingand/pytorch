@@ -152,8 +152,8 @@ def scan(
             combine_fn,
             leaves_init,
             leaves_xs,
-            dim=dim,
-            reverse=reverse,
+            dim,
+            reverse,
             additional_inputs=[],
         )
 
@@ -177,13 +177,13 @@ class ScanOp(HigherOrderOperator):
 
     def __call__(self, combine_fn, init, xs, dim, reverse, additional_inputs):
         assert isinstance(additional_inputs, list), "additional_inputs must be a list."
-        
-        # These checks had to be moved from `scan` to __call__ because otherwise an 
+
+        # These checks had to be moved from `scan` to __call__ because otherwise an
         # error torch._dynamo.exc.Unsupported: generator is raised
         # Check xs and init for type
         validate_subgraph_args_types(init)
         validate_subgraph_args_types(xs)
-        
+
         # Check the dim of every element of xs
         if any(x.ndim < dim for x in xs):
             raise RuntimeError(
@@ -191,7 +191,7 @@ class ScanOp(HigherOrderOperator):
             )
         if any(x.shape[dim] == 0 for x in xs):
             raise RuntimeError("The scan dimension of all elements of xs must be > 0")
-        
+
         validate_subgraph_args_types(additional_inputs)
         return super().__call__(combine_fn, init, xs, dim, reverse, additional_inputs)
 

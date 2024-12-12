@@ -1968,11 +1968,11 @@ def forward(self, pred_1, x_1):
         # Scan dimension is 0
         init = torch._ops.ops.aten.slice(x, dim, 0, 1, 1)
         inp = torch._ops.ops.aten.slice(x, dim, 1, None, 1)
-        
+
         with self.assertRaisesRegex(
             # Should be: RuntimeError, "Init leaves must be a Tensor"
             torch._dynamo.exc.UncapturedHigherOrderOpError,
-            ".*"
+            ".*",
         ):
             result_init = scan_fct(
                 get_scan_combine_fn("add", False),
@@ -1994,11 +1994,9 @@ def forward(self, pred_1, x_1):
         with self.assertRaisesRegex(
             # Should be: RuntimeError, "Init leaves must be a Tensor"
             torch._dynamo.exc.UncapturedHigherOrderOpError,
-            ".*"
+            ".*",
         ):
-            result_init = scan_fct(
-                get_scan_combine_fn("add", False), init, x, dim=dim
-            )
+            result_init = scan_fct(get_scan_combine_fn("add", False), init, x, dim=dim)
 
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager"])

@@ -186,11 +186,14 @@ def _assert_tensors_nonaliasing(inputs, outputs):
         output_tensor_ids
     ), "inputs to function body cannot alias outputs"
 
+
 def check_subgraph_args_types(args):
     from . import TensorVariable
-    
+
     if not all(type(a.realize()) is TensorVariable for a in args):
-        unimplemented(f"Expected all leaves to be of torch.Tensor type, but got {[type(a.realize()) for a in args]}.")
+        unimplemented(
+            f"Expected all leaves to be of torch.Tensor type, but got {[type(a.realize()) for a in args]}."
+        )
 
 
 def _check_supported_callable_arg(
@@ -1423,7 +1426,6 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
 
         xs_proxy = tuple(x.as_proxy() for x in xs_seq)
         init_proxy = tuple(i.as_proxy() for i in init_seq)
-        # additional_inputs_proxy = tuple(ai.as_proxy() for ai in additional_inputs_seq) + tuple(combine_freevars_proxy)
         additional_inputs_proxy = list(
             ai.as_proxy() for ai in additional_inputs_seq
         ) + list(combine_freevars_proxy)
