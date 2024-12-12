@@ -50,3 +50,8 @@ def freeze_rng_state():
             if torch.cuda.is_available():
                 torch.cuda.set_rng_state(cuda_rng_state)  # type: ignore[possibly-undefined]
             torch.set_rng_state(rng_state)
+
+
+# Used for tests as a function on module level
+def _dummy_test_fn_with_module():
+    pass
