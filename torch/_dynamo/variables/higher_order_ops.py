@@ -186,6 +186,12 @@ def _assert_tensors_nonaliasing(inputs, outputs):
         output_tensor_ids
     ), "inputs to function body cannot alias outputs"
 
+def check_subgraph_args_types(args):
+    from . import TensorVariable
+    
+    if not all(type(a.realize()) is TensorVariable for a in args):
+        unimplemented(f"Expected all leaves to be of torch.Tensor type, but got {[type(a.realize()) for a in args]}.")
+
 
 def _check_supported_callable_arg(
     tx: "InstructionTranslator", func_var: VariableTracker, arg_name
@@ -1337,6 +1343,7 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
                 f"internal error, please report an issue to PyTorch."
             )
         init_seq = init.unpack_var_sequence(tx)
+        check_subgraph_args_types(init_seq)
 
         # xs input check
         if not isinstance(xs, (ListVariable, TupleVariable)):
@@ -1346,6 +1353,7 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
                 f"internal error, please report an issue to PyTorch."
             )
         xs_seq = xs.unpack_var_sequence(tx)
+        check_subgraph_args_types(xs_seq)
 
         # additional_inputs input check
         if not isinstance(additional_inputs, (ListVariable, TupleVariable)):
@@ -1355,6 +1363,7 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
                 f"internal error, please report an issue to PyTorch."
             )
         additional_inputs_seq = additional_inputs.unpack_var_sequence(tx)
+        check_subgraph_args_types(additional_inputs_seq)
 
         dim_fake = (
             dim.as_proxy()

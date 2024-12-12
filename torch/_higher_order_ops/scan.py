@@ -38,8 +38,6 @@ def wrap_combine_fn_flat(
     carry = pytree.tree_unflatten(args[:num_init_leaves], spec_init)
     xs = pytree.tree_unflatten(args[num_init_leaves:], spec_xs)
     return combine_fn(carry, xs)
-    # carry, combined = combine_fn(carry, xs)
-    # return [carry, combined]
 
 
 def _extract_carry_and_out(flat_out: List[Any], num_carry: int):
@@ -121,19 +119,8 @@ def scan(
         if not isinstance(reverse, bool):
             raise RuntimeError("Reverse must be a bool, but got " + str(type(reverse)))
 
-        # # Check flat_xs and flat_init for type
-        validate_subgraph_args_types(flat_xs)
-        validate_subgraph_args_types(flat_init)
-
         if len(flat_init) == 0:
             raise RuntimeError("Init tensors must be provided")
-
-        if any(x.ndim < dim for x in flat_xs):
-            raise RuntimeError(
-                "All elements of xs must at least have 'dim' number of dimensions"
-            )
-        if any(x.shape[dim] == 0 for x in flat_xs):
-            raise RuntimeError("The scan dimension of all elements of xs must be > 0")
 
         if len(flat_xs) == 0:
             return pytree.tree_unflatten(flat_init, init_spec), xs
@@ -190,6 +177,21 @@ class ScanOp(HigherOrderOperator):
 
     def __call__(self, combine_fn, init, xs, dim, reverse, additional_inputs):
         assert isinstance(additional_inputs, list), "additional_inputs must be a list."
+        
+        # These checks had to be moved from `scan` to __call__ because otherwise an 
+        # error torch._dynamo.exc.Unsupported: generator is raised
+        # Check xs and init for type
+        validate_subgraph_args_types(init)
+        validate_subgraph_args_types(xs)
+        
+        # Check the dim of every element of xs
+        if any(x.ndim < dim for x in xs):
+            raise RuntimeError(
+                "All elements of xs must at least have 'dim' number of dimensions"
+            )
+        if any(x.shape[dim] == 0 for x in xs):
+            raise RuntimeError("The scan dimension of all elements of xs must be > 0")
+        
         validate_subgraph_args_types(additional_inputs)
         return super().__call__(combine_fn, init, xs, dim, reverse, additional_inputs)
 
@@ -218,7 +220,6 @@ def generic_scan(operator, init, xs, dim=0, reverse=False, additional_inputs=Non
         # Compute dummy shapes for the pre-allocation
         num_init_leaves = len(init)
         dummy_carry, dummy_out = _extract_carry_and_out(
-            # operator(
             call_operator(
                 *carry,
                 *[first_slice_copy(elem, dim) for elem in xs],
@@ -258,7 +259,6 @@ def generic_scan(operator, init, xs, dim=0, reverse=False, additional_inputs=Non
         for i in range(num_elems):
             ind = i if not reverse else num_elems - i - 1
             carry, out = _extract_carry_and_out(
-                # operator(
                 call_operator(
                     *carry,
                     *[elem.select(dim, ind) for elem in xs],
@@ -273,7 +273,6 @@ def generic_scan(operator, init, xs, dim=0, reverse=False, additional_inputs=Non
         return [*carry, *list(outs)]
 
     scans = _scan(init, xs)
-
     return scans
 
 
@@ -435,9 +434,9 @@ def scan_functionalize(ctx, combine_fn, init, xs, dim, reverse, additional_input
             functional_combine_fn,
             unwrapped_init,
             unwrapped_xs,
-            dim=dim,
-            reverse=reverse,
-            additional_inputs=unwrapped_additional_inputs,
+            dim,
+            reverse,
+            unwrapped_additional_inputs,
         )
     return ctx.wrap_tensors(ret)
 

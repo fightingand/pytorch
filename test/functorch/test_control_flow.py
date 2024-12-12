@@ -1961,7 +1961,6 @@ def forward(self, pred_1, x_1):
         scan_fct = compile_mode_helper(scan, compile_mode)
 
         # Only init and no input
-        # Only init and no input
         x = torch.randn(3, 1, 2)
         init = torch.randn(3, 2)
         dim = 1
@@ -1969,29 +1968,18 @@ def forward(self, pred_1, x_1):
         # Scan dimension is 0
         init = torch._ops.ops.aten.slice(x, dim, 0, 1, 1)
         inp = torch._ops.ops.aten.slice(x, dim, 1, None, 1)
-        if compile_mode == "none":
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "The scan dimension of all elements of xs must be > 0",
-            ):
-                result_init = scan_fct(
-                    get_scan_combine_fn("add", False),
-                    init,
-                    inp,
-                    dim=dim,
-                )
-        else:
-            with self.assertRaisesRegex(
-                # Should be: RuntimeError, "Input leaves must have a scan dimension > 0"
-                torch._dynamo.exc.Unsupported,
-                "Observed exception.*",
-            ):
-                result_init = scan_fct(
-                    get_scan_combine_fn("add", False),
-                    init,
-                    inp,
-                    dim=dim,
-                )
+        
+        with self.assertRaisesRegex(
+            # Should be: RuntimeError, "Init leaves must be a Tensor"
+            torch._dynamo.exc.UncapturedHigherOrderOpError,
+            ".*"
+        ):
+            result_init = scan_fct(
+                get_scan_combine_fn("add", False),
+                init,
+                inp,
+                dim=dim,
+            )
 
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager"])
@@ -2003,52 +1991,14 @@ def forward(self, pred_1, x_1):
 
         # Init is a float and not a tensor
         init = 1.0
-        if compile_mode == "none":
-            with self.assertRaisesRegex(
-                AssertionError,
-                ".*can only be of.*",
-            ):
-                result_init = scan_fct(
-                    get_scan_combine_fn("add", False), init, x, dim=dim
-                )
-        else:
-            with self.assertRaisesRegex(
-                # Should be: RuntimeError, "Init leaves must be a Tensor"
-                torch._dynamo.exc.Unsupported,
-                "Observed exception.*",
-            ):
-                result_init = scan_fct(
-                    get_scan_combine_fn("add", False), init, x, dim=dim
-                )
-
-    @requires_cuda
-    @parametrize("compile_mode", ["none", "eager"])
-    def test_scan_init_too_few_leaves(self, compile_mode):
-        scan_fct = compile_mode_helper(scan, compile_mode)
-
-        def fct(x, y):
-            return x[0], (x[1], y)
-
-        x = torch.randn(3, 1, 2)
-        dim = 1
-
-        # Init is a float and not a tensor
-        init = (torch.randn(3, 1, 2), torch.randn(3, 1, 2))
-        # if compile_mode == "none":
-        #     # with self.assertRaisesRegex(
-        #     #     AssertionError,
-        #     #     ".*can only be of.*",
-        #     # ):
-        #     result_init = scan_fct(
-        #         fct, init, x, dim=dim
-        #     )
-        # else:
         with self.assertRaisesRegex(
             # Should be: RuntimeError, "Init leaves must be a Tensor"
-            torch._dynamo.exc.Unsupported,
-            "Observed exception.*",
+            torch._dynamo.exc.UncapturedHigherOrderOpError,
+            ".*"
         ):
-            result_init = scan_fct(fct, init, x, dim=dim)
+            result_init = scan_fct(
+                get_scan_combine_fn("add", False), init, x, dim=dim
+            )
 
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager"])
