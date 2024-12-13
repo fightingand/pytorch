@@ -1146,15 +1146,15 @@ def _test_autoload(test_directory, options, enable=True):
         os.environ.pop("TORCH_DEVICE_BACKEND_AUTOLOAD")
 
 
-def test_with_openreg(test_module, test_directory, options):
-    cpp_extensions_test_dir = os.path.join(
+def run_test_with_openreg(test_module, test_directory, options):
+    openreg_dir = os.path.join(
         test_directory, "cpp_extensions", "open_registration_extension"
     )
-    install_directory, return_code = install_cpp_extensions(cpp_extensions_test_dir)
+    install_dir, return_code = install_cpp_extensions(openreg_dir)
     if return_code != 0:
         return return_code
 
-    with extend_python_path(install_directory):
+    with extend_python_path(install_dir):
         return run_test(test_module, test_directory, options)
 
 
@@ -1481,8 +1481,8 @@ CUSTOM_HANDLERS = {
     "test_ci_sanity_check_fail": run_ci_sanity_check,
     "test_autoload_enable": test_autoload_enable,
     "test_autoload_disable": test_autoload_disable,
-    "test_cpp_extensions_open_device_registration": test_with_openreg,
-    "test_transformers": test_with_openreg,
+    "test_cpp_extensions_open_device_registration": run_test_with_openreg,
+    "test_transformers": run_test_with_openreg,
 }
 
 
