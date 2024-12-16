@@ -767,6 +767,7 @@ torch_cpp_srcs = [
     "torch/csrc/api/src/serialize/input-archive.cpp",
     "torch/csrc/api/src/serialize/output-archive.cpp",
     "torch/csrc/api/src/xpu.cpp",
+    "torch/csrc/profiler/python/combined_traceback.cpp",
 ]
 
 libtorch_python_cuda_core_sources = [
@@ -901,7 +902,6 @@ libtorch_python_core_sources = [
     "torch/csrc/multiprocessing/init.cpp",
     "torch/csrc/onnx/init.cpp",
     "torch/csrc/profiler/python/init.cpp",
-    "torch/csrc/profiler/python/combined_traceback.cpp",
     "torch/csrc/serialization.cpp",
     "torch/csrc/tensor/python_tensor.cpp",
     "torch/csrc/utils/init.cpp",
