@@ -24,7 +24,7 @@ from torch.utils._ordered_set import OrderedSet
 from ..triton_bundler import TritonBundler
 from ..utils import prefix_is_reduction
 from .autotune_cache import AutotuneCache
-from .benchmarking import benchmarker
+from .benchmarking import benchmarker, LazyBenchmark
 from .coordinate_descent_tuner import CoordescTuner
 from .hints import (
     _NUM_THREADS_PER_WARP,
@@ -761,7 +761,7 @@ class CachingAutotuner(KernelInterface):
 
         return binary, launcher
 
-    def bench(self, launcher, *args, grid, with_profiler=False, **kwargs):
+    def bench(self, launcher, *args, grid, with_profiler=False, lazy=False, **kwargs):
         """Measure the performance of a given launcher"""
         # we don't skip configs with spilled registers when auto-tuning custom
         # (user-written) Triton kernels, as (i) we don't have any knowledge or
@@ -805,6 +805,8 @@ class CachingAutotuner(KernelInterface):
         if self.device_props.type == "cpu":
             return benchmarker.benchmark_cpu(kernel_call)
 
+        if lazy:
+            return benchmarker.lazy_benchmark_gpu(kernel_call, rep=40)
         return benchmarker.benchmark_gpu(kernel_call, rep=40)
 
     def copy_args_to_cpu_if_needed(self, *args, **kwargs):
@@ -909,8 +911,12 @@ class CachingAutotuner(KernelInterface):
             is_forward=self.inductor_meta.get("is_forward"),
         ):
             timings = {
-                launcher: self.bench(launcher, *args, **kwargs)
+                launcher: self.bench(launcher, *args, **kwargs, lazy=True)
                 for launcher in self.launchers
+            }
+            timings = {
+                launcher: float(lazy_benchmark)
+                for launcher, lazy_benchmark in timings.items()
             }
 
             for k, v in timings.items():
