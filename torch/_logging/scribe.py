@@ -3,7 +3,7 @@ from typing_extensions import TypeAlias
 
 
 try:
-    from fbscribelogger import (  # type: ignore[import-untyped, import-not-found]
+    from fbscribelogger import (  # type: ignore[import-untyped, import-not-found, unused-ignore]
         make_scribe_logger,
     )
 except ImportError:

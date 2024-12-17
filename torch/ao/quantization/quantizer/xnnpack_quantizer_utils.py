@@ -192,7 +192,7 @@ def _annotate_linear(
         if len(node.args) > 2:
             bias_node = node.args[2]
 
-        if _is_annotated([node]) is False:  # type: ignore[list-item]
+        if _is_annotated([node]) is False:
             _annotate_input_qspec_map(
                 node,
                 act_node,
@@ -384,7 +384,7 @@ def _do_annotate_conv_relu(
             input_qspec_map=input_qspec_map, _annotated=True
         )
         relu_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
+            output_qspec=get_output_act_qspec(quantization_config),
             _annotated=True,
         )
         _mark_nodes_as_annotated(partition)
@@ -606,7 +606,7 @@ def _do_annotate_conv_bn(
             _annotated=True,
         )
         output_node.meta["quantization_annotation"] = QuantizationAnnotation(
-            output_qspec=get_output_act_qspec(quantization_config),  # type: ignore[arg-type]
+            output_qspec=get_output_act_qspec(quantization_config),
             _annotated=True,
         )
         _mark_nodes_as_annotated(partition)
