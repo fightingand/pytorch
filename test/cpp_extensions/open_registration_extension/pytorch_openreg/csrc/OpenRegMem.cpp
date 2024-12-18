@@ -31,15 +31,29 @@ struct OpenRegAllocator final : at::Allocator {
     return {data, data, &ReportAndDelete, curr_device};
   }
 
+  static void free(void* ptr) {
+    py::gil_scoped_acquire acquire;
+    TORCH_CHECK(
+        get_method("free")(reinterpret_cast<openreg_ptr_t>(ptr)).cast<bool>(),
+        "Failed to free memory pointer at ",
+        ptr);
+  }
+
   static void ReportAndDelete(void* ptr) {
     if (!ptr || !Py_IsInitialized()) {
       return;
     }
-    py::gil_scoped_acquire acquire;
-    TORCH_CHECK(
-        get_method("free")(reinterpret_cast<openreg_ptr_t>(ptr)).cast<bool>(),
-        "Failed to free memory pointer at ", ptr
-    );
+    
+    try {
+      free(ptr);
+    } catch (py::error_already_set& e) {
+      // Workaround for python generator before 3.9
+      if (e.matches(PyExc_StopIteration)) {
+        free(ptr);
+      } else {
+        throw e;
+      }
+    }
   }
 
   at::DeleterFnPtr raw_deleter() const override {
