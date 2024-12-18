@@ -3,6 +3,7 @@
 import abc
 import io
 import os
+import zstandard
 from collections.abc import MutableMapping, Sequence
 from typing import Optional, Type
 
@@ -10,7 +11,7 @@ from typing import Optional, Type
 from typing_extensions import Buffer
 
 
-__all__ = ["Extension", "StreamTransformExtension", "Rot13", "ExtensionRegistry"]
+__all__ = ["Extension", "StreamTransformExtension", "Rot13", "ZStandard", "ExtensionRegistry"]
 
 
 class Extension(abc.ABC):
@@ -149,11 +150,36 @@ class Rot13(StreamTransformExtension):
         return Reader(input)
 
 
+class ZStandard(StreamTransformExtension):
+    def __init__(self):
+        super().__init__()
+
+    @staticmethod
+    def from_descriptor(version: str) -> "ZStandard":
+        if version.partition(".")[0] != "1":
+            raise ValueError(f"Unknown extension {version=}")
+        return ZStandard()
+
+    @staticmethod
+    def registry_name() -> str:
+        return "stream.zstd"
+
+    def get_descriptor(self):
+        return f"{self.registry_name()}/1"
+
+    def transform_to(self, output: io.IOBase) -> io.RawIOBase:
+        compressor = zstandard.ZstdCompressor()
+        return compressor.stream_writer(output)
+
+    def transform_from(self, input: io.IOBase) -> io.RawIOBase:
+        decompressor = zstandard.ZstdDecompressor()
+        return decompressor.stream_reader(input)
+
 class ExtensionRegistry:
     def __init__(self) -> None:
         # Populate default registry contents
         self.extensions: MutableMapping[str, Type[Extension]] = {
-            cls.registry_name(): cls for cls in [Rot13]
+            cls.registry_name(): cls for cls in [Rot13, ZStandard]
         }
 
     def register(self, cls: Type[Extension]) -> None:
