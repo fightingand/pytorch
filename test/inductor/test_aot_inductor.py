@@ -51,6 +51,7 @@ from torch.testing._internal.inductor_utils import GPU_TYPE
 from torch.testing._internal.logging_utils import LoggingTestCase, make_logging_test
 from torch.testing._internal.triton_utils import HAS_GPU, requires_gpu
 from torch.utils import _pytree as pytree
+from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._triton import has_triton_tma
 
 
@@ -4167,6 +4168,56 @@ class AOTInductorTestsTemplate:
                 rtol=1e-3,
                 dynamic_shapes=dynamic_shapes,
             )
+
+    def test_list_clearing(self):
+        # Borrowed from test_torchinductor
+        class Model(torch.nn.Module):
+            def forward(self, x, y):
+                a = x + y
+                return (a @ a,)
+
+        inps = [
+            torch.rand(5, 5, device=self.device),
+            torch.rand(5, 5, device=self.device),
+        ]
+
+        model = Model().to(device=self.device)
+        # NOTE: There are additional references to inps if we use
+        # strict=True here, which will cause inps not deallocated
+        # in time later in this test.
+        package = torch._inductor.aoti_compile_and_package(
+            torch.export.export(model, tuple(inps), strict=False)
+        )
+        fn_compiled = torch._inductor.aoti_load_package(package)
+
+        test_self = self
+        empty_strided_seen = False
+
+        class TestRefMode(TorchDispatchMode):
+            def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+                kwargs = kwargs if kwargs else {}
+
+                nonlocal inps
+                nonlocal test_self
+                nonlocal empty_strided_seen
+
+                if (
+                    func is torch.ops.aten.empty_strided.default
+                    and not empty_strided_seen
+                ):
+                    # inputs should be deallocated by this point
+                    # Unlike in test_torchinductor, boxed_run here
+                    # will clear inps from C++ and make the weak
+                    # inp_refs in test_torchindutor invalid here.
+                    empty_strided_seen = True
+                    test_self.assertEqual(len(inps), 0)
+
+                return func(*args, **kwargs)
+
+        with TestRefMode():
+            fn_compiled.loader.boxed_run(inps)
+
+        self.assertEqual(len(inps), 0)
 
 
 class AOTInductorLoggingTest(LoggingTestCase):

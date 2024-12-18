@@ -464,6 +464,12 @@ std::vector<at::Tensor> AOTIModelPackageLoader::run(
   return runner_->run(inputs, stream_handle);
 }
 
+std::vector<at::Tensor> AOTIModelPackageLoader::boxed_run(
+    std::vector<at::Tensor>&& inputs,
+    void* stream_handle) {
+  return runner_->boxed_run(std::move(inputs), stream_handle);
+}
+
 std::unordered_map<std::string, std::string> AOTIModelPackageLoader::
     get_metadata() {
   return metadata_;
@@ -501,6 +507,7 @@ std::vector<std::string> AOTIModelPackageLoader::get_constant_fqns() {
   std::unordered_map<std::string, std::string> constant_name_to_fqn =
       runner_->getConstantNamesToOriginalFQNs();
   std::vector<std::string> constant_fqns;
+  constant_fqns.reserve(constant_name_to_fqn.size());
   for (const auto& it : constant_name_to_fqn) {
     constant_fqns.push_back(it.second);
   }
