@@ -8422,7 +8422,7 @@ graph():
                 self.assertTrue(torch.allclose(unflattened_result, eager_result))
 
                 for fqn, mod in swap.items():
-                    ufm.replace_or_create_new_leaf_module(fqn, mod)
+                    ufm.set_submodule(fqn, mod)
                 unflattened_result = ufm(*inp)
                 self.assertTrue(torch.allclose(unflattened_result, eager_result))
 
@@ -8470,7 +8470,7 @@ graph():
             unflattened_result = ufm(*inp)
             self.assertTrue(torch.allclose(unflattened_result, eager_result))
 
-            ufm.replace_or_create_new_leaf_module("n", N())
+            ufm.set_submodule("n", N())
             unflattened_result = ufm(*inp)
             self.assertTrue(torch.allclose(unflattened_result, eager_result))
 
@@ -8561,7 +8561,7 @@ graph():
 
             if swap:
                 for fqn, mod in swap.items():
-                    ufm.replace_or_create_new_leaf_module(fqn, mod)
+                    ufm.set_submodule(fqn, mod)
                 unflattened_result = ufm(*inp)
                 self.assertTrue(torch.allclose(unflattened_result, eager_result))
 
@@ -8617,7 +8617,7 @@ graph():
 
             if swap:
                 for fqn, mod in swap.items():
-                    ufm.replace_or_create_new_leaf_module(fqn, mod)
+                    ufm.set_submodule(fqn, mod)
                 unflattened_result = ufm(*inp)
                 self.assertTrue(torch.allclose(unflattened_result, eager_result))
 
