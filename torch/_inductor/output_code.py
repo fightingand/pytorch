@@ -290,10 +290,14 @@ class CompiledFxGraphConstantsWithGm(CompiledFxGraphConstants):
 
     def unwrap(self, g: CompiledFxGraph) -> Dict[str, torch.Tensor]:
         if g.allocated_constant_name is not None:
-            return {
+            return_dict = {
                 name: getattr(self.gm, name)
                 for name in g.allocated_constant_name.values()
+                if hasattr(self.gm, name)
             }
+            if g.constants:
+                return_dict.update(g.constants)
+            return return_dict
         else:
             assert g.constants is not None
             return g.constants
@@ -371,8 +375,15 @@ class CompiledFxGraph(OutputCode):
         self.mutated_inputs = OrderedSet(graph.mutated_inputs)
         self.mutated_input_idxs = OrderedSet(graph.mutated_input_idxs)
         if has_frozen_params(gm):
+            # When freezing turns on, the frozen parameters can be fetched
+            # from the Graph Module by name. So we only need to store the
+            # constant added by the graph lowering.
             self.allocated_constant_name = graph.allocated_constant_name
-            self.constants = None
+            self.constants = {
+                key: value
+                for key, value in graph.constants.items()
+                if not key.startswith("_frozen_param")
+            }
         else:
             self.allocated_constant_name = None
             self.constants = graph.constants
