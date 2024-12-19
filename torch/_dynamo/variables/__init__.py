@@ -112,6 +112,7 @@ from .user_defined import (
     MutableMappingVariable,
     RemovableHandleVariable,
     UserDefinedClassVariable,
+    UserDefinedDictVariable,
     UserDefinedObjectVariable,
 )
 
