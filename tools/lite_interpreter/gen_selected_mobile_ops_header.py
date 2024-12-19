@@ -33,7 +33,7 @@ inline constexpr bool should_include_kernel_dtype(
   const char *kernel_tag_str,
   at::ScalarType scalar_type
 ) {
-  [[maybe_unused]] std::string_view kernel_tag_sv =
+  [[maybe_unused]] auto kernel_tag_sv =
       std::string_view(kernel_tag_str);
   $body return false;
 }
