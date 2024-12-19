@@ -2,9 +2,10 @@
 import os
 from typing import Callable, Optional, TypeVar
 
-from torch.fx import Graph
+from torch.fx import Graph, Node
 from torch.fx._compatibility import compatibility
 from torch.fx.graph_module import GraphModule
+from torch.fx.traceback import NodeSource, NodeSourceAction
 
 
 T = TypeVar("T")
@@ -34,6 +35,10 @@ class GraphTransformObserver:
         self.gm = gm
         self.passname = passname
         self.subsystem = subsystem
+
+        self.erased_nodes = set()
+        self.created_nodes = set()
+        self.name_to_node = {}
 
         # If log_url is None, we don't log anything
         if log_url is None:
@@ -83,22 +88,26 @@ class GraphTransformObserver:
         )
 
     def __enter__(self):
-        if self.log_url is None or self.gm is None:
-            return self
-
-        self.erased_nodes = set()
-        self.created_nodes = set()
         self.gm._register_create_node_hook(self.on_node_creation)
         self.gm._register_erase_node_hook(self.on_node_erase)
+        self.gm._register_replace_node_hook(self.on_node_replace)
+
+        self.erased_nodes.clear()
+        self.created_nodes.clear()
+        self.name_to_node.clear()
+
+        for node in self.gm.graph.nodes:
+            self.name_to_node[node.name] = node
 
         return self
 
     def __exit__(self, type, value, tb):
-        if self.log_url is None or self.gm is None:
-            return
-
         self.gm._unregister_create_node_hook(self.on_node_creation)
         self.gm._unregister_erase_node_hook(self.on_node_erase)
+        self.gm._unregister_replace_node_hook(self.on_node_replace)
+
+        if self.log_url is None or self.gm is None:
+            return
 
         if len(self.created_nodes) > 0 or len(self.erased_nodes) > 0:
             for e in self.input_dot_graph.get_node_list():
@@ -133,6 +142,37 @@ class GraphTransformObserver:
 
     def on_node_creation(self, node):
         self.created_nodes.add(node.name)
+        self.name_to_node[node.name] = node
+        source = NodeSource(None, self.passname, NodeSourceAction.CREATE)
+        if "from_node" not in node.meta:
+            node.meta["from_node"] = [source]
+        else:
+            node.meta["from_node"].append(source)
 
     def on_node_erase(self, node):
         self.erased_nodes.add(node.name)
+        self.name_to_node.pop(node.name, None)
+
+    def on_node_replace(self, old: Node, new: str, user: Node):
+        # Update node meta when replacing old node with new node
+        new_node = self.name_to_node.get(new, None)
+
+        action = [NodeSourceAction.REPLACE]
+        if new_node.name in self.created_nodes:
+            action.append(NodeSourceAction.CREATE)
+
+        def created_this_pass(source):
+            return source.passname == self.passname and source.action == [
+                NodeSourceAction.CREATE
+            ]
+
+        # remove redundant source added on node creation
+        new_from_node = new_node.meta.get("from_node", [])
+        new_from_node = [
+            source for source in new_from_node if not created_this_pass(source)
+        ]
+
+        # add new source
+        new_node_source = NodeSource(old, self.passname, action)
+        new_from_node.append(new_node_source)
+        new_node.meta["from_node"] = new_from_node
