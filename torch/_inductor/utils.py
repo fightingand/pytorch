@@ -47,6 +47,7 @@ import sympy
 
 import torch
 from torch._inductor.runtime.hints import DeviceProperties
+from torch.utils._ordered_set import OrderedSet
 
 
 if TYPE_CHECKING:
@@ -2017,8 +2018,17 @@ def device_need_guard(device: str):
 
 
 def needs_fallback_due_to_atomic_add_limitations(dtype):
-    # tl.atomic_add does NOT support the following types
-    return dtype in (torch.int64, torch.bool, torch.bfloat16)
+    # tl.atomic add has bfloat16 support in fbcode
+    # but not in OSS https://github.com/pytorch/pytorch/issues/97016
+    # we will fallback until the code is upstreamed to OSS
+    # We only allow this on H100 which has dedicated atomic add instructions
+    # for bfloat16
+    # https://fb.workplace.com/groups/1075192433118967/permalink/1566018764036329/
+    capability = torch.cuda.get_device_capability()
+    if config.is_fbcode() and dtype == torch.bfloat16 and capability >= (9, 0):
+        return False
+    else:
+        return dtype in OrderedSet([torch.int64, torch.bool, torch.bfloat16])
 
 
 def use_scatter_fallback(
